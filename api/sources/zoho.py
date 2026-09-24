@@ -307,8 +307,10 @@ def fetch_deals(settings: Settings, connect_fn: Connect = connect) -> ZohoResult
             cur.execute(build_deals_query(columns), {"stages": in_scope_stage_keys()})
             rows = cur.fetchall()
     except Exception as exc:  # one failing source never fails the whole run
+        # The message is shown on the open API, so it names the kind of failure only; the
+        # exception text (which can carry the host and login name) stays in the server log.
         logger.exception("Zoho Postgres read failed")
-        return ZohoResult(error=f"Zoho Postgres read failed: {type(exc).__name__}: {exc}")
+        return ZohoResult(error=f"Zoho Postgres read failed ({type(exc).__name__}). Details are in the server log.")
 
     deals: list[ZohoDeal] = []
     for row in rows:

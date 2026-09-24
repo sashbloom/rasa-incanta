@@ -68,10 +68,6 @@ class Settings(BaseSettings):
     # Setu, read-only Postgres (Brick 3)
     setu_database_url: str = ""
 
-    # ICP bot API, one input framework (Brick 3)
-    icp_bot_base_url: str = ""
-    icp_bot_api_key: str = ""
-
     @property
     def is_local(self) -> bool:
         return self.environment.strip().lower() == "local"

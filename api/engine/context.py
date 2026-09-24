@@ -2,7 +2,7 @@
 it rests on, plus gap flags for whatever a source could not provide.
 
 Brick 2 fills only what Zoho knows: `deal_state` (CRM fields) and the Zoho contact in
-`stakeholder`. The ICP bot, Read.ai, Outlook and Setu arrive in Brick 3; until then
+`stakeholder`. ICP logic (copied from the ICP bot), Read.ai, Outlook and Setu arrive in Brick 3; until then
 their signals are empty and flagged, so the page and the model both see the gap.
 
 Every fact has a stable id (e.g. "zoho.stage"). A next best action cites fact ids, and

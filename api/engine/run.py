@@ -4,11 +4,13 @@ History is append-only. Every run adds its own snapshots, cards and recommendati
 `deals` table alone holds the latest state. A rerun in the same week regenerates only
 recommendations nobody has decided on yet: a deal with a decision this week is left alone.
 
-Brick 2 drafts one NBA for one deal (the most advanced, best-documented one unless a deal
-is named). Brick 4 widens this to 3-4 NBAs for every deal, per user.
+`nba_limit` sets how many deals get an NBA (most advanced and best-documented first); None
+means every deal, which is what POST /api/run does. Each deal gets one NBA for now; Brick 4
+widens this to 3-4 per deal, per user.
 """
 from __future__ import annotations
 
+import copy
 import logging
 from collections.abc import Callable
 from dataclasses import asdict
@@ -63,7 +65,7 @@ def upsert_deals(session: Session, deals: list[ZohoDeal], now: datetime) -> dict
     return seen
 
 
-def pick_deals(deals: list[ZohoDeal], cards: dict[str, CardContent], limit: int) -> list[ZohoDeal]:
+def pick_deals(deals: list[ZohoDeal], cards: dict[str, CardContent], limit: int | None) -> list[ZohoDeal]:
     """Most advanced stage first, then the best-documented, then the most recently touched."""
     def key(z: ZohoDeal):
         touched = z.modified_at.timestamp() if z.modified_at else 0
@@ -96,14 +98,18 @@ def run_week(
     fetch: Callable[[Settings], ZohoResult] = fetch_deals,
     llm_client: Any | None = None,
     deal_zoho_id: str | None = None,
-    nba_limit: int = 1,
+    nba_limit: int | None = 1,
+    run: Run | None = None,
 ) -> Run:
+    """Run the pass. Pass `run` (already saved, status "running") to fill in a run the caller
+    created, e.g. so an API can return its id before the work finishes."""
     now = now or datetime.now(timezone.utc)
     week = week_start(now, settings.timezone)
     today = local_today(now, settings.timezone)
-    run = Run(week_start=week, kind=kind, status="running", started_at=now, stats={})
-    session.add(run)
-    session.commit()
+    if run is None:
+        run = Run(week_start=week, kind=kind, status="running", started_at=now, stats={})
+        session.add(run)
+        session.commit()
 
     stats: dict[str, Any] = {"sources": {}, "nba_created": 0, "nba_kept": 0, "nba_skipped": []}
     zoho = fetch(settings)
@@ -134,6 +140,9 @@ def run_week(
             stats["nba_skipped"].append({"deal": deal_zoho_id, "reason": "Deal not found among in-scope deals."})
     else:
         chosen = pick_deals(zoho.deals, cards, nba_limit)
+    stats["nba_to_draft"] = len(chosen)
+    run.stats = copy.deepcopy(stats)  # a snapshot: sharing lists with stats would hide later changes
+    session.commit()  # the cards and snapshots are saved before the slow part starts
 
     client = llm_client if llm_client is not None else default_llm_client(settings)
     for z in chosen:
@@ -155,9 +164,11 @@ def run_week(
             gaps=cards[z.zoho_id].gaps, model=result.model,
         ))
         stats["nba_created"] += 1
+        run.stats = copy.deepcopy(stats)
+        session.commit()  # progress is visible while the run is still going
 
     run.status = "partial" if stats["nba_skipped"] else "succeeded"
-    run.stats = stats
+    run.stats = copy.deepcopy(stats)
     run.finished_at = datetime.now(timezone.utc)
     session.commit()
     logger.info("Run %s finished: %s", run.id, run.status)

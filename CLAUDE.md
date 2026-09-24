@@ -6,8 +6,8 @@ opportunity from Prospect to Negotiated Proposal Sent, it recommends 3–4 next 
 each backed by evidence, and learns from what each user selects and why. Business goal: close deals
 faster, and keep on-hold clients engaged so conversations resume instead of restarting.
 
-It is a standalone agent with its own logic, data connections and deployment. The ICP bot is one
-input framework, called through its API.
+It is a standalone agent with its own logic, data connections and deployment. The ICP bot's
+account-fit and stakeholder logic is copied into this codebase, not called over its API.
 
 ## Vocabulary (use these names in code, UI and docs)
 - **Rasa Incanta (RI):** the agent's name. Rasa is Sanskrit for essence or elixir; Incanta is
@@ -16,7 +16,7 @@ input framework, called through its API.
 - **NBA / recommendation:** one specific, evidence-backed action for one deal this week.
   Internal nickname: "the potion".
 - **Five input signals** (columns on `context_cards`):
-  - `account_fit` and `stakeholder`: from the ICP bot API.
+  - `account_fit` and `stakeholder`: ICP logic copied from the ICP bot into our own code (Brick 3).
   - `conversation`: Read.ai calls and Outlook mail, through Myrah.
   - `capability`: Setu case studies and Practus SMEs.
   - `deal_state`: Zoho stage, momentum (on track, ahead, stalled, on hold, inactive), last touch.
@@ -28,7 +28,7 @@ input framework, called through its API.
 - **Myrah:** the Microsoft 365 account Mahak operates; it holds read-only access to Zoho, Read.ai and Outlook.
 
 ## Non-negotiable rules
-1. Read-only on every source (Zoho, Read.ai, Outlook, Setu, ICP bot). Never write back.
+1. Read-only on every source (Zoho, Read.ai, Outlook, Setu). Never write back.
 2. Every NBA cites at least one real, sourced fact (call, email, CRM field, case study).
    No evidence means no NBA: flag the gap instead.
 3. Company and contact come only from the Zoho Potentials record. Never substitute a more senior contact.
@@ -59,7 +59,8 @@ input framework, called through its API.
   - `views.py`: board and deal payloads, always through `visible_deals` (every active deal today)
   - `domain/`: pure business rules, fully unit-tested
   - `sources/<name>.py`: one integration per file
-  - `engine/`: the weekly run (thin slice now, full engine in Brick 4)
+  - `engine/`: the weekly run (thin slice now, full engine in Brick 4). Started by `POST /api/run`
+    (background, one at a time, an NBA for every deal); `GET /api/run` is its status.
 - `frontend/`: React + Vite + Tailwind. Every API call goes through `apiFetch` in `src/api.ts`,
   never bare `fetch`. The router basename comes from Vite's `BASE_URL`.
 - UI direction, brand tokens and screens: `DESIGN.md`.
@@ -80,9 +81,9 @@ input framework, called through its API.
 - **Read.ai:** our own OAuth client for a weekly import (no webhook of our own). Refresh tokens can
   rotate, so store tokens in our Postgres (an `oauth_tokens` table), never only in env vars. The ICP
   bot's `readai_oauth_setup.py` and `readai_backfill_cli.py` are a useful reference.
-- **ICP bot:** call its run API once per company and cache the result for 4 weeks. It needs a
-  service API key before we rely on it; its current config only has CORS, which does not protect
-  server-to-server calls.
+- **ICP logic:** copied from the ICP bot's code (`PPP report/backend`, e.g. `agents/nodes/score_icp_v2.py`
+  and `skills/icp-qualification`) into our own module, run on our own data. No call to the ICP bot,
+  no `ICP_BOT_*` settings. Cache a company's result for 4 weeks.
 - **LLM observability:** follow the Practus platform convention. Every agent uses the same shared
   Langfuse project and keys (`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASEURL`), and
   agents are told apart by a tag in code. Ours is `rasa-incanta`. Tracing is a silent no-op when unset.
@@ -103,7 +104,7 @@ input framework, called through its API.
 |---|---|---|
 | 1 | Skeleton: settings, schema, health check, Docker, Railway (done) | `/health` is green on Railway |
 | 2 | Thin slice: Zoho pull, minimal context, one NBA from Claude, simple page | One real deal shows a real NBA |
-| 3 | All signals: Read.ai, Setu, ICP bot, Outlook; context cards; name matching | Every deal has a context card |
+| 3 | All signals: Read.ai, Setu, ICP logic (copied in), Outlook; context cards; name matching | Every deal has a context card |
 | 4 | Engine: deal state, objectives, 3–4 NBAs, evidence validation, per-user generation | A full weekly run on all deals |
 | 5 | Board: sign-in, per-user boards, ticks, rationale, own action, export | Users can review and decide |
 | 6 | Learning and history: decisions to factors to next run; four-week history; weekly summary | Week 2 uses week 1's decisions |

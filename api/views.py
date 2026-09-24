@@ -85,6 +85,55 @@ def _segments(card: ContextCard | None) -> list[dict]:
     return out
 
 
+def iso(value: datetime | None) -> str | None:
+    """An instant as ISO 8601 in UTC. SQLite hands timestamps back without a zone; they are UTC."""
+    if value is None:
+        return None
+    return (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).isoformat()
+
+
+def action_payload(r: Recommendation) -> dict:
+    return {
+        "id": str(r.id), "rank": r.rank, "objective": r.objective, "action": r.action, "why_now": r.why_now,
+        "effort": r.effort, "sme": r.sme, "proof": r.proof or None, "gaps": r.gaps or [], "model": r.model,
+        "created_at": iso(r.created_at),
+        "evidence": [{**e, "source_label": SOURCE_LABEL.get(e.get("source"), e.get("source"))} for e in r.evidence or []],
+    }
+
+
+def run_payload(run: Run) -> dict:
+    return {
+        "id": str(run.id), "week_start": run.week_start.isoformat(), "kind": run.kind, "status": run.status,
+        "started_at": iso(run.started_at), "finished_at": iso(run.finished_at),
+        "stats": run.stats or {}, "error": run.error,
+    }
+
+
+def deals_view(session: Session) -> list[dict]:
+    """Every deal we have seen (active or not), each with the NBAs from its latest run that drafted any."""
+    latest_run: dict[uuid.UUID, uuid.UUID] = {}
+    actions: dict[uuid.UUID, list[Recommendation]] = {}
+    for r in session.scalars(select(Recommendation).order_by(Recommendation.created_at.desc())):
+        run_id = latest_run.setdefault(r.deal_id, r.run_id)
+        if r.run_id == run_id:
+            actions.setdefault(r.deal_id, []).append(r)
+    weeks = {run.id: run.week_start.isoformat()
+             for run in session.scalars(select(Run).where(Run.id.in_(set(latest_run.values()))))} if latest_run else {}
+
+    deals = session.scalars(select(Deal).order_by(Deal.is_active.desc(), Deal.name))
+    return [
+        {
+            "id": str(d.id), "zoho_id": d.zoho_id, "name": d.name, "account_name": d.account_name,
+            "contact_name": d.contact_name, "owner_name": d.owner_name, "stage": d.stage, "board": d.board,
+            "sbu": d.sbu, "is_active": d.is_active,
+            "last_seen_at": iso(d.last_seen_at),
+            "actions_week": weeks.get(latest_run.get(d.id)),
+            "actions": [action_payload(r) for r in sorted(actions.get(d.id, []), key=lambda r: r.rank)],
+        }
+        for d in deals
+    ]
+
+
 def deal_view(session: Session, deal_id: uuid.UUID) -> dict | None:
     deal = session.scalar(visible_deals().where(Deal.id == deal_id))
     if deal is None:
@@ -101,10 +150,7 @@ def deal_view(session: Session, deal_id: uuid.UUID) -> dict | None:
         run = session.get(Run, latest_rec.run_id)
         actions_week = run.week_start.isoformat() if run else None
         actions = [
-            {"id": str(r.id), "rank": r.rank, "objective": r.objective, "action": r.action, "why_now": r.why_now,
-             "effort": r.effort, "sme": r.sme, "proof": r.proof or None,
-             "evidence": [{**e, "source_label": SOURCE_LABEL.get(e.get("source"), e.get("source"))}
-                          for e in r.evidence or []]}
+            action_payload(r)
             for r in session.scalars(
                 select(Recommendation).where(Recommendation.run_id == latest_rec.run_id,
                                              Recommendation.deal_id == deal.id).order_by(Recommendation.rank)

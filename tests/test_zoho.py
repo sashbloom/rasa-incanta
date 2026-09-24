@@ -96,10 +96,11 @@ def test_fetch_without_credentials_reports_instead_of_raising():
 
 def test_fetch_failure_reports_instead_of_raising():
     def boom(_settings):
-        raise OSError("connection refused")
+        raise OSError('connection to "zoho.example" as user "ri_reader" refused')
 
     result = fetch_deals(settings(), connect_fn=boom)
-    assert not result.ok and "connection refused" in result.error
+    assert not result.ok and "OSError" in result.error
+    assert "zoho.example" not in result.error and "ri_reader" not in result.error  # no host or login leaks
 
 
 def test_fetch_without_a_deals_table():

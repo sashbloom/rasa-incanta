@@ -51,12 +51,25 @@ Run the tests with `python -m pytest -q` from the repo root, and `npx tsc --noEm
 
 ### Run the week
 
-With `ZOHO_PG_*` and `ANTHROPIC_API_KEY` set in `.env`:
+With `ZOHO_PG_*` and `ANTHROPIC_API_KEY` set in `.env`. Every route also answers under
+`/reports/rasa-incanta`.
 
+| Call | What it does |
+|---|---|
+| `POST /api/run` | Starts a full run in the background: Zoho pull, a context card per deal, an NBA for every deal. Returns the run (`202`, status `running`), or `409` if one is already going. |
+| `GET /api/run` | The latest run: `running`, `succeeded`, `partial` (some deals got no NBA; `stats.nba_skipped` says why) or `failed` (`error` says why). |
+| `GET /api/deals` | Every deal, active or not, with the NBAs from its latest run. |
+
+```bash
+curl -X POST http://localhost:8000/api/run
+curl http://localhost:8000/api/run        # poll until status is no longer "running"
+curl http://localhost:8000/api/deals
 ```
-python -m api.cli run                # pull Zoho, a context card per deal, one NBA
-python -m api.cli run --deal <id>    # the NBA for a specific Zoho deal id
-```
+
+No sign-in guards these, so anyone with the URL can start a run, and each run pays for one
+Claude call per deal. Runs never overlap.
+
+`python -m api.cli run` still exists for one deal from a terminal (`--deal <zoho id>`).
 
 ## Deploy on Railway
 

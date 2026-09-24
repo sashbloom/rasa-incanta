@@ -98,7 +98,7 @@ Desktop is a three-part workspace, all content left-aligned:
 4. **Summary:** new deals, stage moves, lost deals, outliers, going cold, decisions pending. Each count opens the filtered list.
 5. **Admin:**
    - Run now;
-   - source health: Zoho, Read.ai, Outlook, Setu and ICP bot, each with last sync and status;
+   - source health: Zoho, Read.ai, Outlook and Setu, each with last sync and status;
    - users and their Zoho names.
 6. **Export:** Excel or CSV of a board, keeping the old workbook's columns plus actions, ticks and rationale.
 
