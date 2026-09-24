@@ -1,5 +1,9 @@
 """Who is asking: our own login, or the Practus Portal's identity handoff.
 
+NOT WIRED IN. The board is open, so no route calls anything here. The module is kept, with its
+tests, so identity can come back without being rebuilt. To gate routes again, call
+`authenticate` from an app-wide dependency and scope `views.visible_deals` by `allowed_sbus`.
+
 Two front doors, one rule each.
 
 Portal (CGO reports standard, behind PORTAL_IDENTITY_ENABLED, off by default). The portal
@@ -13,11 +17,7 @@ Our own login. Username and password, checked against a scrypt hash, then an HMA
 session cookie. An unset SESSION_SECRET refuses every sign-in and every session. The user
 row is re-read on every request, so deactivating someone locks them out at once.
 
-Protect by default: `gate` runs on every route of the app, and only the routes named in
-`PUBLIC_ENDPOINTS` skip it. It decides by the matched route, never by the path, so the
-`/reports/rasa-incanta` prefix cannot make a protected route look public.
-
-Scoping: a user sees deals whose SBU is in their `user_allowed_sbus`. No rows, no deals.
+Scoping, once wired: a user sees deals whose SBU is in their `user_allowed_sbus`. No rows, no deals.
 """
 from __future__ import annotations
 
@@ -28,12 +28,11 @@ import secrets
 import time
 import uuid
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from api.config import Settings, get_settings
-from api.db import get_session
+from api.config import Settings
 from api.models import User
 
 PORTAL_EMAIL_HEADER = "X-CGO-Portal-User-Email"
@@ -133,37 +132,6 @@ def authenticate(request: Request, session: Session, settings: Settings) -> User
         raise HTTPException(401, "Account inactive or removed.")
     request.state.via_portal = False
     return user
-
-
-# Routes anyone may call. Everything else needs a user. Filled in by main.py with the
-# endpoint functions themselves, so renaming a path can never widen this list.
-PUBLIC_ENDPOINTS: set = set()
-
-
-def gate(request: Request, session: Session = Depends(get_session)) -> None:
-    """App-wide dependency: authenticate every request whose route is not public."""
-    route = request.scope.get("route")
-    if route is not None and getattr(route, "endpoint", None) in PUBLIC_ENDPOINTS:
-        return
-    request.state.user = authenticate(request, session, get_settings())
-
-
-def current_user(request: Request, session: Session = Depends(get_session)) -> User:
-    """The user `gate` resolved for this request."""
-    user = getattr(request.state, "user", None)
-    return user if user is not None else authenticate(request, session, get_settings())
-
-
-def boot_problems(settings: Settings) -> list[str]:
-    """Misconfigurations the web app refuses to start with. Names the variables, never values."""
-    problems = []
-    if not settings.session_secret:
-        problems.append("SESSION_SECRET is not set, so sign-in cannot be secured.")
-    if settings.portal_identity_enabled and not settings.cgo_reports_api_key:
-        problems.append("PORTAL_IDENTITY_ENABLED is true but CGO_REPORTS_API_KEY is not set.")
-    if settings.cgo_reports_api_key and settings.cgo_reports_api_key == settings.session_secret:
-        problems.append("CGO_REPORTS_API_KEY must not equal SESSION_SECRET.")
-    return problems
 
 
 def login(session: Session, username: str, password: str) -> User | None:

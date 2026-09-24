@@ -1,35 +1,23 @@
 """Rasa Incanta: one process serving the API and the built React app.
 
 Every route answers both at `/` and under `/reports/rasa-incanta/` (see `api/prefix.py`).
-`/health` is public and must keep working at the root. Everything under `/api/` except
-sign-in needs a user (`api/auth.py`), and every deal query is scoped by the user's SBUs.
+`/health` must keep working at the root. The board is open: no route asks who the caller is.
+`api/auth.py` keeps the login and portal identity code, unwired, for when that changes.
 """
 import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from api import __version__
-from api.auth import (
-    PUBLIC_ENDPOINTS,
-    SESSION_COOKIE,
-    allowed_sbus,
-    boot_problems,
-    current_user,
-    gate,
-    issue_session,
-    login,
-)
 from api.config import REPORT_PREFIX, get_settings
 from api.db import get_session
-from api.models import User
 from api.prefix import MountUnderPrefix
 from api.views import deal_view, week_view
 
@@ -39,19 +27,12 @@ logger = logging.getLogger("rasa_incanta")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    settings = get_settings()
-    problems = boot_problems(settings)
-    if problems:  # refuse to boot; Railway's healthcheck then keeps the last good deploy
-        for problem in problems:
-            logger.error(problem)
-        raise RuntimeError("Refusing to start: " + " ".join(problems))
-    for warning in settings.startup_warnings():
+    for warning in get_settings().startup_warnings():
         logger.warning(warning)
     yield
 
 
-# Protect by default: every route needs a user unless it is listed in PUBLIC_ENDPOINTS below.
-fastapi_app = FastAPI(title="Rasa Incanta", version=__version__, lifespan=lifespan, dependencies=[Depends(gate)])
+fastapi_app = FastAPI(title="Rasa Incanta", version=__version__, lifespan=lifespan)
 
 if get_settings().is_local:
     # Vite's dev server (npm run dev) calls http://localhost:8000 directly.
@@ -78,54 +59,16 @@ def health(response: Response, session: Session = Depends(get_session)) -> dict:
     }
 
 
-# ---------------------------------------------------------------- sign-in
-
-class LoginBody(BaseModel):
-    username: str
-    password: str
-
-
-def me_payload(user: User, request: Request) -> dict:
-    return {"username": user.username, "role": user.role, "sbus": allowed_sbus(user),
-            "via_portal": bool(getattr(request.state, "via_portal", False))}
-
-
-@fastapi_app.post("/api/auth/login")
-def auth_login(body: LoginBody, request: Request, response: Response, session: Session = Depends(get_session)) -> dict:
-    settings = get_settings()
-    if not settings.session_secret:
-        raise HTTPException(503, "Sign-in is not configured on this server.")
-    user = login(session, body.username, body.password)
-    if user is None:
-        raise HTTPException(401, "That username and password don't match.")
-    response.set_cookie(
-        SESSION_COOKIE, issue_session(settings, user.id), max_age=settings.session_max_age_hours * 3600,
-        httponly=True, secure=not settings.is_local, samesite="lax", path="/",
-    )
-    return me_payload(user, request)
-
-
-@fastapi_app.post("/api/auth/logout")
-def auth_logout(response: Response) -> dict:
-    response.delete_cookie(SESSION_COOKIE, path="/")
-    return {"ok": True}
-
-
-@fastapi_app.get("/api/me")
-def me(request: Request, user: User = Depends(current_user)) -> dict:
-    return me_payload(user, request)
-
-
 # ---------------------------------------------------------------- board
 
 @fastapi_app.get("/api/week")
-def week(user: User = Depends(current_user), session: Session = Depends(get_session)) -> dict:
-    return week_view(session, user, get_settings())
+def week(session: Session = Depends(get_session)) -> dict:
+    return week_view(session, get_settings())
 
 
 @fastapi_app.get("/api/deals/{deal_id}")
-def deal(deal_id: uuid.UUID, user: User = Depends(current_user), session: Session = Depends(get_session)) -> dict:
-    view = deal_view(session, user, deal_id)
+def deal(deal_id: uuid.UUID, session: Session = Depends(get_session)) -> dict:
+    view = deal_view(session, deal_id)
     if view is None:
         raise HTTPException(404, "Deal not found.")
     return view
@@ -170,7 +113,5 @@ def spa(full_path: str = "") -> Response:
                             status_code=503)
     return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
-
-PUBLIC_ENDPOINTS.update({health, auth_login, auth_logout, api_not_found, spa})
 
 app = MountUnderPrefix(fastapi_app, REPORT_PREFIX)

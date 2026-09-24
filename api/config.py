@@ -1,8 +1,8 @@
 """Application settings, read from environment variables (and the repo-root .env when running locally).
 
-Secrets have no literal defaults and fail closed: an unset SESSION_SECRET means nobody can
-sign in, an unset CGO_REPORTS_API_KEY means no portal request is trusted, an unset Zoho or
-Anthropic credential means the run flags the gap instead of crashing. Blank values count as
+Secrets have no literal defaults and fail closed: an unset Zoho or Anthropic credential means
+the run flags the gap instead of crashing. SESSION_SECRET and CGO_REPORTS_API_KEY feed the
+identity code in api/auth.py, which is kept but not wired in while the board is open. Blank values count as
 unset, so a .env copied from .env.example behaves like an empty environment.
 """
 from functools import lru_cache
@@ -26,11 +26,11 @@ class Settings(BaseSettings):
     timezone: str = "Asia/Kolkata"
     static_dir: str = str(Path(__file__).resolve().parent / "static")  # the built React app
 
-    # Our own login: signs session cookies. Unset = sign-in refused.
+    # Our own login (api/auth.py, not wired in while the board is open). Unset = sign-in refused.
     session_secret: str = ""
     session_max_age_hours: int = 12
 
-    # Practus Portal identity handoff (CGO reports standard). Off until the portal team asks.
+    # Practus Portal identity handoff (CGO reports standard; api/auth.py, not wired in).
     portal_identity_enabled: bool = False
     cgo_reports_api_key: str = ""  # shared by all reports, server-side only; unset = refuse
 
@@ -92,6 +92,8 @@ class Settings(BaseSettings):
 
     def startup_warnings(self) -> list[str]:
         warnings: list[str] = []
+        if self.portal_identity_enabled:
+            warnings.append("PORTAL_IDENTITY_ENABLED is true but has no effect: the board is open to everyone.")
         if not self.is_local and self.sqlalchemy_url.startswith("sqlite"):
             warnings.append("DATABASE_URL points at SQLite outside local; set it to the Railway Postgres URL.")
         if not self.is_local and not self.anthropic_api_key:

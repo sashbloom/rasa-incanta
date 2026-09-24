@@ -12,7 +12,6 @@ from api.config import Settings
 REPO_ROOT = Path(__file__).resolve().parents[1]
 Settings.model_config["env_file"] = None  # tests see only what they set
 
-TEST_SESSION_SECRET = "test-session-secret-not-for-production"
 TEST_PORTAL_KEY = "test-portal-key"
 
 
@@ -49,7 +48,7 @@ def db_url(tmp_path, monkeypatch, static_dir):
     url = f"sqlite:///{tmp_path / 'test.db'}"
     monkeypatch.setenv("DATABASE_URL", url)
     monkeypatch.setenv("ENVIRONMENT", "local")
-    monkeypatch.setenv("SESSION_SECRET", TEST_SESSION_SECRET)
+    monkeypatch.delenv("SESSION_SECRET", raising=False)
     monkeypatch.setenv("STATIC_DIR", str(static_dir))
     monkeypatch.delenv("PORTAL_IDENTITY_ENABLED", raising=False)
     monkeypatch.delenv("CGO_REPORTS_API_KEY", raising=False)

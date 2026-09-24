@@ -1,22 +1,22 @@
-"""What the board shows: the week's three boards and one deal's detail, scoped to the viewer.
+"""What the board shows: the week's three boards and one deal's detail.
 
-Every query goes through `visible_deals`, which only returns active, on-board deals in one of
-the viewer's allowed SBUs. No allowed SBUs means no deals; a deal with no SBU is not shown.
+The board is open, so everyone sees every active, on-board deal. Every query still goes through
+`visible_deals`, the one place per-user SBU scoping would return (`user_allowed_sbus` is kept
+in the schema for that).
 """
 from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Select, false, select
+from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
-from api.auth import allowed_sbus
 from api.config import Settings
 from api.domain.gaps import Gap, gap_copy
 from api.domain.stages import Board, stage_position
 from api.domain.weeks import week_start
-from api.models import ContextCard, Deal, Recommendation, Run, User
+from api.models import ContextCard, Deal, Recommendation, Run
 
 BOARD_ORDER = (Board.PIPELINE, Board.PRE_PIPELINE, Board.PROSPECT)
 BOARD_LABEL = {Board.PIPELINE: "Pipeline", Board.PRE_PIPELINE: "Pre-Pipeline", Board.PROSPECT: "Prospect"}
@@ -31,12 +31,8 @@ SEGMENTS = (
 SOURCE_LABEL = {"zoho": "Zoho", "readai": "Call", "outlook": "Mail", "setu": "Setu", "icp": "ICP"}
 
 
-def visible_deals(user: User) -> Select:
-    sbus = allowed_sbus(user)
-    stmt = select(Deal).where(Deal.is_active.is_(True), Deal.board.is_not(None))
-    if not sbus:
-        return stmt.where(false())
-    return stmt.where(Deal.sbu.in_(sbus))
+def visible_deals() -> Select:
+    return select(Deal).where(Deal.is_active.is_(True), Deal.board.is_not(None))
 
 
 def _run_notice(session: Session) -> str | None:
@@ -47,10 +43,10 @@ def _run_notice(session: Session) -> str | None:
     return f"Zoho didn't respond at {at}. Showing the latest deals we have."
 
 
-def week_view(session: Session, user: User, settings: Settings, now: datetime | None = None) -> dict:
+def week_view(session: Session, settings: Settings, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     week = week_start(now, settings.timezone)
-    deals = list(session.scalars(visible_deals(user)))
+    deals = list(session.scalars(visible_deals()))
     with_actions = set(session.scalars(
         select(Recommendation.deal_id).join(Run, Run.id == Recommendation.run_id)
         .where(Run.week_start == week, Recommendation.deal_id.in_([d.id for d in deals]))
@@ -89,8 +85,8 @@ def _segments(card: ContextCard | None) -> list[dict]:
     return out
 
 
-def deal_view(session: Session, user: User, deal_id: uuid.UUID) -> dict | None:
-    deal = session.scalar(visible_deals(user).where(Deal.id == deal_id))
+def deal_view(session: Session, deal_id: uuid.UUID) -> dict | None:
+    deal = session.scalar(visible_deals().where(Deal.id == deal_id))
     if deal is None:
         return None
     card = session.scalar(

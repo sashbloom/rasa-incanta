@@ -38,8 +38,7 @@ input framework, called through its API.
    `no_setu_match`, `no_mail`, `unverified`). One failing source never fails the whole run.
 6. Secrets live only in environment variables (repo-root `.env` locally, Railway Variables in
    production). Only `.env.example` is tracked, and it lists every variable the code reads, with
-   no values. Secrets have no literal defaults and fail closed; the app refuses to boot without
-   `SESSION_SECRET`.
+   no values. Secrets have no literal defaults and fail closed.
 7. Only deal fields and call or mail excerpts go to the language model, never whole mailboxes or transcripts.
 8. Keep NBAs short: action ≤ 60 words, one-line why-now, 3–4 per deal, at least two different objectives.
 
@@ -54,9 +53,10 @@ input framework, called through its API.
 - `api/`
   - `main.py`: every route; `config.py`, `db.py`, `models.py`, `migrations/`
   - `auth.py`: own login (scrypt, signed cookie) and the portal branch (`CGO_REPORTS_API_KEY` +
-    `X-CGO-Portal-User-Email`, behind `PORTAL_IDENTITY_ENABLED`); `gate` protects every route
-    not in `PUBLIC_ENDPOINTS`. Deals are scoped by `user_allowed_sbus`; no rows means no deals.
-  - `views.py`: board and deal payloads, always through `visible_deals`
+    `X-CGO-Portal-User-Email`). **Not wired in: the board is open, with no sign-in** (decided
+    24 Sep 2026). Kept and tested so access control can return: wire `authenticate` into an
+    app-wide dependency and scope `visible_deals` by `user_allowed_sbus`.
+  - `views.py`: board and deal payloads, always through `visible_deals` (every active deal today)
   - `domain/`: pure business rules, fully unit-tested
   - `sources/<name>.py`: one integration per file
   - `engine/`: the weekly run (thin slice now, full engine in Brick 4)

@@ -1,4 +1,3 @@
-export type Me = { username: string; role: string; sbus: string[]; via_portal: boolean }
 
 export type DealRow = {
   id: string

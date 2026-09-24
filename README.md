@@ -13,7 +13,11 @@ requirements.txt, requirements-dev.txt
 Dockerfile, railway.toml, .env.example
 ```
 
-One process serves everything, at `/` and under `/reports/rasa-incanta/`. `/health` is public at both.
+One process serves everything, at `/` and under `/reports/rasa-incanta/`. `/health` answers at both.
+
+**The board is open: there is no sign-in.** Anyone with the URL sees every live deal, so do not
+share the Railway domain. The login and portal identity code is kept in `api/auth.py`, tested but
+not wired in, and the user tables stay in the schema for when access control returns.
 
 ## Run locally
 
@@ -23,7 +27,7 @@ Windows (PowerShell), from the repo root:
 py -3.12 -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements-dev.txt
-copy .env.example .env          # then set SESSION_SECRET (the app refuses to start without it)
+copy .env.example .env
 alembic -c api/alembic.ini upgrade head
 cd frontend; npm ci; npm run build; cd ..
 uvicorn api.main:app --reload
@@ -35,18 +39,9 @@ On the Practus network npm may fail with `SELF_SIGNED_CERT_IN_CHAIN`. Run npm wi
 `NODE_OPTIONS=--use-system-ca` so Node trusts the Windows certificate store; do not turn off
 certificate checks.
 
-Generate a session secret with `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
+Open http://localhost:8000/ (or http://localhost:8000/reports/rasa-incanta/); the board opens directly.
 
-Create someone who can sign in (prompts for a password of 12+ characters):
-
-```
-python -m api.cli add-user --username mahak --role admin --sbu India --sbu USA --sbu MEA --sbu Europe
-```
-
-A user sees only deals in their SBUs; no SBUs means no deals. Add `--ms-email` to make the
-person reachable through the Practus Portal, and `--no-password` for portal-only accounts.
-
-Open http://localhost:8000/ (or http://localhost:8000/reports/rasa-incanta/) and sign in.
+`python -m api.cli add-user` still records users and their SBUs for later; nothing reads them yet.
 `/health` should show `"status": "ok"` and `"database": "ok"`.
 
 For frontend work with hot reload, keep uvicorn running and `cd frontend && npm run dev`
@@ -73,10 +68,8 @@ python -m api.cli run --deal <id>    # the NBA for a specific Zoho deal id
 4. In the service's Variables set every name in `.env.example` that applies. At minimum:
    - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}`
    - `ENVIRONMENT` = `production`
-   - `SESSION_SECRET` = a fresh random value (the app refuses to start without it)
-   - `PORTAL_IDENTITY_ENABLED` = `false` until the portal team asks
-5. The healthcheck is `/health`. Every deploy runs migrations before the app starts, and a
-   misconfigured secret stops the boot, so Railway keeps the last good deploy.
+5. The healthcheck is `/health`. Every deploy runs migrations before the app starts, and a failed
+   migration stops the boot, so Railway keeps the last good deploy.
 
 Portal readiness checks (from `docs/building-a-new-report.md`), against the deployed URL:
 
@@ -92,4 +85,4 @@ curl --path-as-is "$S/%2e%2e%2f%2e%2e%2f%2e%2e%2fetc/passwd"          # must not
 |---|---|
 | 1. Skeleton | Done: settings, schema, health check, Docker, Railway |
 | 2. Thin slice | Built: Zoho Postgres source, deal upsert, weekly snapshots, minimal context cards, one evidence-checked NBA from Claude. Waiting on `ZOHO_PG_*` and `ANTHROPIC_API_KEY` for the first real run |
-| Report standard | Done: `api/` + `frontend/` layout, one process at `/` and `/reports/rasa-incanta/`, own login plus portal identity (off), users and SBU access, React board (sign-in, My week, deal detail), 109 tests |
+| Report standard | Done: `api/` + `frontend/` layout, one process at `/` and `/reports/rasa-incanta/`, React board (My week, deal detail), 100 tests. Board open, no sign-in; identity code and user schema kept, unwired |
