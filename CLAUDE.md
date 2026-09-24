@@ -36,22 +36,32 @@ input framework, called through its API.
    decisions. A rerun in the same week regenerates only recommendations nobody has decided on yet.
 5. A missing source becomes a gap flag on the card (`no_call_logged`, `no_icp`, `no_contact`,
    `no_setu_match`, `no_mail`, `unverified`). One failing source never fails the whole run.
-6. Secrets live only in environment variables (`backend/.env` locally, Railway Variables in
-   production). Only `.env.example` is tracked.
+6. Secrets live only in environment variables (repo-root `.env` locally, Railway Variables in
+   production). Only `.env.example` is tracked, and it lists every variable the code reads, with
+   no values. Secrets have no literal defaults and fail closed; the app refuses to boot without
+   `SESSION_SECRET`.
 7. Only deal fields and call or mail excerpts go to the language model, never whole mailboxes or transcripts.
 8. Keep NBAs short: action ≤ 60 words, one-line why-now, 3–4 per deal, at least two different objectives.
 
 ## Stack and layout
 - Python 3.12, FastAPI, SQLAlchemy 2.0, Alembic, Postgres on Railway, pydantic-settings, httpx,
   Anthropic SDK. Models: `LLM_MODEL_ACTIONS` for NBAs, `LLM_MODEL_EXTRACTION` for reasoning factors.
-- One Railway service from the repo-root `Dockerfile`; it runs `alembic upgrade head`, then uvicorn.
-- `backend/app/`
-  - `config.py`, `db.py`, `models.py`
+- Practus report standard (`docs/building-a-new-report.md`, `docs/report-developer-onboarding.md`):
+  one Railway service in Singapore, one process, served at `/` and under `/reports/rasa-incanta/`
+  (`api/prefix.py` sets `root_path` and never strips the path). `/health` stays public at the root.
+- The repo-root `Dockerfile` builds the frontend into `api/static`, then runs
+  `alembic -c api/alembic.ini upgrade head` and `uvicorn api.main:app`.
+- `api/`
+  - `main.py`: every route; `config.py`, `db.py`, `models.py`, `migrations/`
+  - `auth.py`: own login (scrypt, signed cookie) and the portal branch (`CGO_REPORTS_API_KEY` +
+    `X-CGO-Portal-User-Email`, behind `PORTAL_IDENTITY_ENABLED`); `gate` protects every route
+    not in `PUBLIC_ENDPOINTS`. Deals are scoped by `user_allowed_sbus`; no rows means no deals.
+  - `views.py`: board and deal payloads, always through `visible_deals`
   - `domain/`: pure business rules, fully unit-tested
-  - `api/`: routers
-  - `sources/<name>.py` (Brick 2 onwards): one integration per file
-  - `engine/` (Brick 4)
-- Frontend (Brick 5): React + Vite in `frontend/`, built into the same image and served by FastAPI.
+  - `sources/<name>.py`: one integration per file
+  - `engine/`: the weekly run (thin slice now, full engine in Brick 4)
+- `frontend/`: React + Vite + Tailwind. Every API call goes through `apiFetch` in `src/api.ts`,
+  never bare `fetch`. The router basename comes from Vite's `BASE_URL`.
 - UI direction, brand tokens and screens: `DESIGN.md`.
 
 ## Source notes (learned from the ICP bot's setup; our connections stay separate)
@@ -59,6 +69,11 @@ input framework, called through its API.
   bot's `.env.example`). If its `Database_Guide.md` shows the Deals fields listed below, prefer our
   own read-only login to it over the Zoho API: plain SQL, no tokens. Otherwise use the Zoho API with a
   Myrah self-client. Azure Postgres needs `sslmode=require`.
+  What we know of the copy (from the ICP bot and Finance agent code, not yet from our own login):
+  tables live in `public`; `deals` has snake_case columns (`deal_name`, `stage`, `ep_involved`,
+  `date_proposal_sent`, `modified_time`, ...), owner via `owner_id` -> `users.full_name`, company via
+  `account_id` -> `accounts.account_name`. The contact's shape is unconfirmed, so `sources/zoho.py`
+  reads `information_schema` and joins only what exists.
 - **Setu:** read-only Postgres mirror `wisible_data` (case studies, team roster). Database only.
 - **Outlook:** Microsoft Graph with an app registration (tenant, client ID, client secret) and
   Mail.Read limited to Myrah's mailbox. No refresh token to store.
@@ -75,16 +90,18 @@ input framework, called through its API.
   let nurture and re-engage actions cite recent company news.
 
 ## Working agreements
-- Schema change: edit `models.py`, then `alembic revision --autogenerate -m "..."`. If autogenerate
-  writes `Text()`, change it to `sa.Text()`. `test_models_and_migrations_are_in_sync` must pass.
-- Tests: `cd backend && python -m pytest -q`. Every brick adds tests. Sources are tested with
-  recorded fixtures, never live calls.
+- Schema change: edit `api/models.py`, then `alembic -c api/alembic.ini revision --autogenerate -m "..."`.
+  If autogenerate writes `Text()`, change it to `sa.Text()`. Name every constraint.
+  `test_models_and_migrations_are_in_sync` must pass.
+- Tests: `python -m pytest -q` from the repo root. Every brick adds tests. Sources are tested with
+  recorded fixtures, never live calls. Security checks must be able to fail: traversal uses 3+
+  levels against the raw ASGI path, scoping uses two restricted users who see different deals.
 - Each source returns a typed result plus its gap flags, so the engine never has to guess what failed.
 
 ## Build plan
 | # | Brick | Done when |
 |---|---|---|
-| 1 | Skeleton: settings, schema, health check, Docker, Railway (done) | `/api/health` is green on Railway |
+| 1 | Skeleton: settings, schema, health check, Docker, Railway (done) | `/health` is green on Railway |
 | 2 | Thin slice: Zoho pull, minimal context, one NBA from Claude, simple page | One real deal shows a real NBA |
 | 3 | All signals: Read.ai, Setu, ICP bot, Outlook; context cards; name matching | Every deal has a context card |
 | 4 | Engine: deal state, objectives, 3–4 NBAs, evidence validation, per-user generation | A full weekly run on all deals |

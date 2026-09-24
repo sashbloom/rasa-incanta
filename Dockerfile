@@ -1,15 +1,24 @@
-# Single Railway service. Brick 5 adds a first stage that builds the frontend
-# and copies it into backend/static, so one process serves the API and the UI.
+# One Railway service, one process: uvicorn serves the API and the built React app.
+
+# Build the frontend. vite.config.ts writes the build to ../api/static.
+FROM node:24-alpine AS frontend
+WORKDIR /build/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
-COPY backend/requirements.txt ./requirements.txt
+COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY backend/ ./
+COPY api/ ./api/
+COPY --from=frontend /build/api/static ./api/static
 
-# Apply database migrations, then start the API. Railway provides $PORT.
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Apply migrations, then start. sh -c so Railway's $PORT is expanded at runtime.
+CMD ["sh", "-c", "alembic -c api/alembic.ini upgrade head && exec uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

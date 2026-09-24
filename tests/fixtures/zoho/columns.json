@@ -1,0 +1,110 @@
+[
+  {
+    "table_name": "deals",
+    "column_name": "id"
+  },
+  {
+    "table_name": "deals",
+    "column_name": "deal_name"
+  },
+  {
+    "table_name": "deals",
+    "column_name": "stage"
+  },
+  {
+    "table_name": "deals",
+    "column_name": "sbu"
+  },
+  {
+    "table_name": "deals",
+    "column_name": "owner_id"
+  },
+  {
+    "table_name": "deals",
+    "column_name": "account_id"
+  },
+  {
+    "table_name": "deals",
+    "column_name": "contact_id"
+  },
+  {
+    "table_name": "deals",
+    "column_name": "city_state"
+  },
+  {
+    "table_name": "deals",
+    "column_name": "potential_lead_source"
+  },
+  {
+    "table_name": "deals",
+    "column_name": "industry_type"
+  },
+  {
+    "table_name": "deals",
+    "column_name": "ep_involved"
+  },
+  {
+    "table_name": "deals",
+    "column_name": "el_involved"
+  },
+  {
+    "table_name": "deals",
+    "column_name": "amount"
+  },
+  {
+    "table_name": "deals",
+    "column_name": "currency"
+  },
+  {
+    "table_name": "deals",
+    "column_name": "modified_time"
+  },
+  {
+    "table_name": "deals",
+    "column_name": "date_became_potential"
+  },
+  {
+    "table_name": "deals",
+    "column_name": "date_became_qualified_prospect"
+  },
+  {
+    "table_name": "deals",
+    "column_name": "date_proposal_sent"
+  },
+  {
+    "table_name": "deals",
+    "column_name": "services"
+  },
+  {
+    "table_name": "deals",
+    "column_name": "client_problem_statement"
+  },
+  {
+    "table_name": "users",
+    "column_name": "id"
+  },
+  {
+    "table_name": "users",
+    "column_name": "full_name"
+  },
+  {
+    "table_name": "accounts",
+    "column_name": "id"
+  },
+  {
+    "table_name": "accounts",
+    "column_name": "account_name"
+  },
+  {
+    "table_name": "contacts",
+    "column_name": "id"
+  },
+  {
+    "table_name": "contacts",
+    "column_name": "first_name"
+  },
+  {
+    "table_name": "contacts",
+    "column_name": "last_name"
+  }
+]

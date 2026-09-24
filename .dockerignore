@@ -4,4 +4,8 @@
 **/.pytest_cache
 **/*.db
 **/node_modules
+frontend/dist
+api/static
+backend
+tests
 .git

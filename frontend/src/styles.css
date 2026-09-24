@@ -1,0 +1,87 @@
+@import 'tailwindcss';
+
+/* Practus brand tokens (DESIGN.md). Exact hex values, no variants. */
+:root {
+  --navy: #123250;
+  --paper: #fbfbfb;
+  --line: #e0e0e0;
+  --teal: #206d81;
+  --teal-deep: #1d5169;
+  --teal-web: #228899;
+  --gold: #fdc13d;
+  --gold-web: #fdb81a;
+  --green: #8fcc54;
+  --slate: #536a80;
+}
+
+@theme inline {
+  --color-navy: var(--navy);
+  --color-paper: var(--paper);
+  --color-line: var(--line);
+  --color-teal: var(--teal);
+  --color-teal-deep: var(--teal-deep);
+  --color-teal-web: var(--teal-web);
+  --color-gold: var(--gold);
+  --color-gold-web: var(--gold-web);
+  --color-green: var(--green);
+  --color-slate: var(--slate);
+  --font-serif: Merriweather, Georgia, serif;
+  --font-sans: Lato, system-ui, sans-serif;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--navy);
+    font: 400 15px/24px var(--font-sans);
+  }
+  :focus-visible {
+    outline: 2px solid var(--teal);
+    outline-offset: 2px;
+  }
+}
+
+/* Type scale (DESIGN.md). In the components layer so utilities such as text-paper win. */
+@layer components {
+  .t-page {
+    font: 700 28px/36px var(--font-serif);
+  }
+  .t-deal {
+    font: 700 22px/30px var(--font-serif);
+  }
+  .t-section {
+    font: 700 17px/26px var(--font-sans);
+  }
+  .t-label {
+    font: 700 13px/20px var(--font-sans);
+  }
+  .t-meta {
+    font: 400 12px/18px var(--font-sans);
+    color: var(--slate);
+  }
+}
+
+/* The ingredient bar fills left to right when a deal opens: about 600ms in total. */
+.segment-fill {
+  transform-origin: left;
+  animation: segment-fill 200ms ease-out both;
+}
+@keyframes segment-fill {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .segment-fill {
+    animation: none;
+  }
+}

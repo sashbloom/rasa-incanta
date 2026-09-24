@@ -1,0 +1,13 @@
+# One service, one process (see Dockerfile). Region: set Southeast Asia (Singapore) under
+# Scale -> Regions & Replicas in the Railway dashboard; our Postgres sources are in Azure India.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Must answer at the root forever, even though the app also lives under /reports/rasa-incanta/.
+healthcheckPath = "/health"
+healthcheckTimeout = 120
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

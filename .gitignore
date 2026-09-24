@@ -13,6 +13,7 @@ __pycache__/
 *.db
 *.sqlite
 
-# node (frontend, from Brick 5)
+# node and the frontend build (built into api/static by npm run build and the Dockerfile)
 node_modules/
 dist/
+api/static/
