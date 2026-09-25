@@ -78,12 +78,13 @@ def _segments(card: ContextCard | None) -> list[dict]:
         facts = signal.get("facts") or []
         if facts:
             dates = [f["date"] for f in facts if f.get("date")]
-            out.append({"key": key, "name": name, "present": True,
-                        "source": SOURCE_LABEL.get(facts[0].get("source"), facts[0].get("source")),
-                        "date": max(dates) if dates else None, "reason": None})
+            labels = list(dict.fromkeys(SOURCE_LABEL.get(f.get("source"), f.get("source")) for f in facts))
+            out.append({"key": key, "name": name, "present": True, "source": ", ".join(labels),
+                        "sources": labels, "date": max(dates) if dates else None, "reason": None})
         else:
             reason = " ".join(gap_copy(f.value) for f in flags if f.value in gaps) or "Nothing found yet."
-            out.append({"key": key, "name": name, "present": False, "source": None, "date": None, "reason": reason})
+            out.append({"key": key, "name": name, "present": False, "source": None, "sources": [], "date": None,
+                        "reason": reason})
     return out
 
 
@@ -159,7 +160,11 @@ def deal_view(session: Session, deal_id: uuid.UUID) -> dict | None:
             )
         ]
     state = (card.deal_state if card else {}) or {}
+    fit = (card.account_fit if card else {}) or {}
+    icp = {k: fit.get(k) for k in ("status", "recommendation", "provisional", "client_total", "client_verdict",
+                                   "practus_total", "practus_verdict", "gates_fired", "computed_at")} if fit else None
     return {
+        "icp": icp,
         "id": str(deal.id), "name": deal.name, "stage": deal.stage, "board": deal.board, "sbu": deal.sbu,
         "account_name": deal.account_name, "contact_name": deal.contact_name, "owner_name": deal.owner_name,
         "ep_involved": deal.ep_involved or [], "el_involved": deal.el_involved or [],

@@ -72,19 +72,40 @@ export function RunNowButton({ running, starting, onClick }: { running: boolean;
   )
 }
 
+const PHASE_LABEL: Record<string, string> = {
+  pull: 'Pulling deals from Zoho, Setu and Read.ai',
+  mail: 'Searching Outlook mail',
+  capability: 'Matching Setu case studies',
+  icp: 'Scoring companies (ICP)',
+  cards: 'Building context cards',
+  nba: 'Drafting actions',
+}
+
+/** done / total for the phase that is running, when that phase counts anything. */
+function phaseCounts(run: RunView): [number, number] | null {
+  const s = run.stats
+  if (s.phase === 'capability' && s.capability_to_do !== undefined) return [s.capability_done ?? 0, s.capability_to_do]
+  if (s.phase === 'icp' && s.icp_to_score) return [s.icp_done ?? 0, s.icp_to_score]
+  if (s.phase === 'nba' && s.nba_to_draft !== undefined) return [s.nba_done ?? 0, s.nba_to_draft]
+  return null
+}
+
 function Progress({ run }: { run: RunView }) {
-  const total = run.stats.nba_to_draft
-  const done = run.stats.nba_done ?? 0
-  const known = total !== undefined
-  const share = known ? (total === 0 ? 1 : Math.min(done / total, 1)) : 0
-  const label = known ? `Drafting actions: ${done} of ${total} deals` : 'Pulling deals from Zoho and building context cards'
+  const phase = run.stats.phase ?? 'pull'
+  const counts = phaseCounts(run)
+  const share = counts ? (counts[1] === 0 ? 1 : Math.min(counts[0] / counts[1], 1)) : 0
+  const noun = phase === 'icp' ? 'companies' : 'deals'
+  const label = `${PHASE_LABEL[phase] ?? 'Working'}${counts ? `: ${counts[0]} of ${counts[1]} ${noun}` : ''}`
   return (
     <div>
-      <div role="progressbar" aria-label="Run progress" aria-valuemin={0} aria-valuemax={known ? total : undefined}
-        aria-valuenow={known ? done : undefined} aria-valuetext={label} className="h-1.5 w-full bg-line">
+      <div role="progressbar" aria-label="Run progress" aria-valuemin={0} aria-valuemax={counts ? counts[1] : undefined}
+        aria-valuenow={counts ? counts[0] : undefined} aria-valuetext={label} className="h-1.5 w-full bg-line">
         <div className="h-full bg-teal" style={{ width: `${Math.round(share * 100)}%` }} />
       </div>
       <p className="t-meta m-0 mt-1.5">{label}.</p>
+      {phase === 'icp' && (
+        <p className="t-meta m-0 mt-1">Each new company takes several minutes; scores are reused for four weeks.</p>
+      )}
     </div>
   )
 }

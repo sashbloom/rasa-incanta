@@ -22,7 +22,14 @@ export type RunView = {
   finished_at: string | null
   error: string | null
   stats: {
+    phase?: 'pull' | 'mail' | 'capability' | 'icp' | 'cards' | 'nba' | 'done'
+    sources?: Record<string, string>
     deals?: number
+    capability_done?: number
+    capability_to_do?: number
+    icp_to_score?: number
+    icp_done?: number
+    icp_cached?: number
     nba_to_draft?: number
     nba_done?: number
     nba_created?: number
@@ -38,6 +45,7 @@ export type Segment = {
   name: string
   present: boolean
   source: string | null
+  sources: string[]
   date: string | null
   reason: string | null
 }
@@ -61,10 +69,24 @@ export type Action = {
   why_now: string
   effort: string | null
   sme: string | null
+  proof: { name: string; why?: string | null } | null
   evidence: Evidence[]
 }
 
+export type IcpSummary = {
+  status: 'scored' | 'gate_1_stopped'
+  recommendation: string | null
+  provisional: boolean | null
+  client_total: number | null
+  client_verdict: string | null
+  practus_total: number | null
+  practus_verdict: string | null
+  gates_fired: string[] | null
+  computed_at: string | null
+}
+
 export type DealDetail = {
+  icp: IcpSummary | null
   id: string
   name: string
   stage: string
@@ -79,4 +101,12 @@ export type DealDetail = {
   segments: Segment[]
   actions: Action[]
   actions_week: string | null
+}
+
+export type SourcesView = {
+  last_run: RunView | null
+  outlook: { configured: boolean; connected: boolean; account: string | null; mailbox: string | null }
+  readai: { configured: boolean; meetings: number; webhook_path: string }
+  exa: { configured: boolean }
+  anthropic: { configured: boolean }
 }

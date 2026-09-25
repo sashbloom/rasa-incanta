@@ -87,27 +87,40 @@ account-fit and stakeholder logic is copied into this codebase, not called over 
   ICP bot retired it). Case studies are `knowledge_chunks` rows with `source_type='case_study'`
   (title `entity_name`, prose `content`, `metadata` industry/service_line; no stable id). SMEs:
   `employees`, plus `knowledge_chunks` types `skill_profile`, `resume`, `partner_profile`.
-  `sources/setu.py` reads case studies; `engine/capability.py` scores them with the ICP bot's P2
-  logic and keeps a match only for the same industry or rare shared terms (keyword score >= 0.5).
+  `engine/capability.py` uses the ICP bot's P2 matcher and its Claude re-rank (one call per deal);
+  if the re-rank fails it falls back to our strict match (same industry, or rare shared terms with
+  keyword score >= 0.5), never to the re-rank's own zero-score fallback. SMEs come from the P3 team
+  matcher, active people only, no extra call.
 - **Conversation from Zoho:** `reachout_tracker` (the deal's outreach log) gives every in-scope
   deal a dated touch with the person met, designation, role and remarks, read in `sources/zoho.py`.
   Teams / in-person / phone clear `no_call_logged`. Emails and phone numbers are scrubbed from
   every fact (`engine/context.scrub`).
-- **Outlook:** Microsoft Graph. Planned as app-only (client credentials) with Mail.Read limited to
-  Myrah's mailbox, but the ICP bot found the tenant refuses Application Mail.Read and uses a
-  delegated refresh token instead: check the token's `roles` claim before building on app-only.
-- **Read.ai:** either our own OAuth client for a weekly import (tokens rotate: store them in an
-  `oauth_tokens` table, never only in env vars), or a signed webhook (`meeting_end`, HMAC-SHA256 of
-  the raw body with a base64 signing key, fail closed; ICP bot `readai_webhook.py`), which only
-  captures meetings from the day it goes live.
-- **ICP logic:** copied from the ICP bot's code (`icp-bot/backend/domains/mahak/people/mahak/icp/`,
-  e.g. `scorer.py`, `gates.py`, `criteria_tables.py`, `persona.py`) into our own module, run on our own data. No call to the ICP bot,
-  no `ICP_BOT_*` settings. Cache a company's result for 4 weeks.
+- **Outlook:** Microsoft Graph, DELEGATED (Practus policy allows no app-level Mail.Read).
+  `sources/outlook.py`: Myrah signs in once from the Sources page (authorization code, confidential
+  client, paste-back redirect `MS_REDIRECT_URI`, default `http://localhost/callback`, which must be
+  registered on the app). Only a sign-in as MYRAH_MAILBOX is stored; the rotating refresh token
+  lives in `oauth_tokens`. Mail is searched per deal on the company name and each contact domain;
+  `engine/linking.py` keeps only mail that really concerns the deal; `engine/mail.py` extracts key
+  points from previews with LLM_MODEL_EXTRACTION.
+- **Read.ai:** the signed workspace webhook, `POST /api/webhooks/readai` (`sources/readai.py`).
+  HMAC-SHA256 of the raw body; the key READAI_WEBHOOK_SECRET is tried raw and base64-decoded; unset
+  means every delivery is refused. Stored in `meetings` without transcripts; linked to deals by
+  participant email domain or the company named in the title. Only meetings from the day the
+  webhook goes live (no OAuth backfill).
+- **ICP logic:** a full copy of the ICP bot's scoring in `api/icp/` (criteria, gates, scorer,
+  verdicts, rule precompute, interpretation, evidence assembly, ownership and secondary research via
+  Exa, Practus history, conflict check, Setu P2/P3), plus its reference files in `api/icp/reference/`.
+  Only plumbing is adapted: `compat.py` maps settings, `mail_client.py` / `meetings_store.py` serve
+  our Outlook and Read.ai data, `pipeline.py` is orchestrator.run() steps 1-8 without reports,
+  persona or QC. Its own tests are copied to `tests/icp/` and must keep passing; `tests/icp/conftest.py`
+  makes every Zoho/Setu read hermetic. Results are cached per company in `company_icp` for
+  ICP_CACHE_DAYS (28); a first score takes minutes per company (Exa research).
 - **LLM observability:** follow the Practus platform convention. Every agent uses the same shared
   Langfuse project and keys (`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASEURL`), and
   agents are told apart by a tag in code. Ours is `rasa-incanta`. Tracing is a silent no-op when unset.
-- **News (optional, for stay-warm actions):** the ICP bot uses Exa for search; an `EXA_API_KEY` would
-  let nurture and re-engage actions cite recent company news.
+- **Exa:** `EXA_API_KEY` powers the ICP bot's web research (ownership, scale, financials,
+  competitors). Without it those criteria are data gaps, as in the ICP bot, and scores are often
+  provisional (Gate 7).
 
 ## Working agreements
 - Schema change: edit `api/models.py`, then `alembic -c api/alembic.ini revision --autogenerate -m "..."`.
@@ -123,7 +136,7 @@ account-fit and stakeholder logic is copied into this codebase, not called over 
 |---|---|---|
 | 1 | Skeleton: settings, schema, health check, Docker, Railway (done) | `/health` is green on Railway |
 | 2 | Thin slice: Zoho pull, minimal context, one NBA from Claude, simple page | One real deal shows a real NBA |
-| 3 | All signals: Read.ai, Setu, ICP logic (copied in), Outlook; context cards; name matching | Every deal has a context card |
+| 3 | All signals: Read.ai, Setu, ICP logic (copied in), Outlook; context cards; name matching (built) | Every deal has a context card |
 | 4 | Engine: deal state, objectives, 3–4 NBAs, evidence validation, per-user generation | A full weekly run on all deals |
 | 5 | Board: sign-in, per-user boards, ticks, rationale, own action, export | Users can review and decide |
 | 6 | Learning and history: decisions to factors to next run; four-week history; weekly summary | Week 2 uses week 1's decisions |

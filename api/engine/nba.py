@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from api.domain.gaps import gap_copy
 from api.domain.nba_rules import MAX_ACTION_WORDS, MAX_WHY_NOW_WORDS, check_nba
-from api.engine.context import CardContent
+from api.engine.context import SIGNALS, CardContent
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +46,16 @@ class NbaResult:
         return self.draft is not None
 
 
-SYSTEM_PROMPT = f"""You recommend next best actions for Practus business development. Practus is a \
-consulting firm; its partners and engagement leads work open opportunities from first prospect \
-to negotiated proposal.
+SYSTEM_PROMPT = f"""You recommend next best actions for Practus business development. Practus is a consulting firm; its partners and engagement leads work open opportunities from first prospect to negotiated proposal.
 
 For the deal you are given, write the single most useful action the deal team can take this week.
+
+The context comes in five signals, each a list of sourced facts:
+- account_fit: the ICP assessment of the company (recommendation, client and Practus lenses, gates, criteria). Use it to judge how hard to push; it informs the objective but does not dictate it.
+- stakeholder: who holds authority and how warm the relationship is.
+- conversation: the Zoho outreach log, Read.ai meetings and Outlook mail, newest first.
+- capability: Practus case studies that fit (with why) and Practus SMEs to bring in.
+- deal_state: Zoho stage, days in stage, last update, amount, problem statements.
 
 Objectives:
 - advance: move the deal to its next stage.
@@ -60,12 +65,10 @@ Objectives:
 - re_engage: reactivate a deal that has gone quiet.
 
 Rules:
-- Use only the facts provided. Every claim in the action and the why-now must rest on at least \
-one fact, and evidence_ids must list the ids of those facts exactly as given.
-- The company and contact are exactly those on the Zoho record. Never suggest going to a more \
-senior or different contact, and never name a company or person that is not in the facts.
-- Some signals are missing (listed as gaps). Do not imply they exist: with no call logged, do not \
-refer to what was said on a call; with no case study matched, do not cite a specific case study.
+- Use only the facts provided. Every claim in the action and the why-now must rest on at least one fact, and evidence_ids must list the ids of those facts exactly as given. Prefer evidence from more than one signal when the facts support it.
+- The company is exactly the one on the Zoho record. Only name people who appear in the facts; never suggest going to a more senior or different contact.
+- Cite a case study as proof, or name an SME to bring in, only when one is in the capability facts.
+- Some signals are missing (listed as gaps). Do not imply they exist: with no call logged, do not refer to what was said on a call; with no mail, do not refer to an email; with no case study matched, do not cite a specific case study; with no ICP read, do not claim how the company scores.
 - The action is specific and concrete (who does what, with what), at most {MAX_ACTION_WORDS} words.
 - why_now is one line, at most {MAX_WHY_NOW_WORDS} words, and says why this week.
 - effort is low, medium or high for the Practus team.
@@ -73,11 +76,13 @@ refer to what was said on a call; with no case study matched, do not cite a spec
 
 
 def build_user_message(deal_name: str, card: CardContent) -> str:
+    """The deal's facts grouped by signal, plus its gaps. Only card facts go to the model."""
+    def slim(f: dict) -> dict:
+        return {k: f[k] for k in ("id", "label", "value", "date") if f.get(k) is not None}
+
     payload = {
         "deal": deal_name,
-        "facts": [
-            {k: f[k] for k in ("id", "label", "value", "date") if f.get(k) is not None} for f in card.facts()
-        ],
+        "signals": {s: [slim(f) for f in (getattr(card, s) or {}).get("facts", [])] for s in SIGNALS},
         "gaps": [gap_copy(g) for g in card.gaps],
     }
     return "Deal context as JSON:\n" + json.dumps(payload, ensure_ascii=False, indent=1)

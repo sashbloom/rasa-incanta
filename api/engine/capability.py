@@ -77,10 +77,7 @@ def match_case_studies(deal: ZohoDeal, corpus: list[CaseStudy], limit: int = MAX
     return matches[:limit]
 
 
-def describe(match: CaseMatch) -> str:
-    """The fact text: which case, what it covered, why it matched."""
-    cs = match.case
-    what = ", ".join(x for x in (cs.industry, cs.service_line) if x)
+def match_reason(match: CaseMatch) -> str:
     why = []
     if match.industry_match:
         why.append("same industry")
@@ -88,4 +85,86 @@ def describe(match: CaseMatch) -> str:
         why.append("shared terms: " + ", ".join(match.keyword_hits))
     if match.geography_match:
         why.append("same geography")
-    return f"{cs.name}" + (f" ({what})" if what else "") + f". Matched on {'; '.join(why)}."
+    return f"Matched on {'; '.join(why)}."
+
+
+def describe(match: CaseMatch) -> str:
+    """The fact text: which case, what it covered, why it matched."""
+    cs = match.case
+    what = ", ".join(x for x in (cs.industry, cs.service_line) if x)
+    return f"{cs.name}" + (f" ({what})" if what else "") + f". {match_reason(match)}"
+
+
+# ---------------------------------------------------------------- with the ICP bot's re-rank
+
+@dataclass
+class Capability:
+    """What a deal can cite as proof, and who to bring in."""
+    cases: list[dict]  # {name, industry, service_line, content, why, industry_match}
+    smes: list[dict]  # {name, grade, why}
+    reranked: bool  # False when the Claude re-rank failed and the strict deterministic match was used
+
+
+def _geography(deal: ZohoDeal) -> str | None:
+    return SBU_GEOGRAPHY.get((deal.sbu or "").strip().lower())
+
+
+def _deterministic_cases(deal: ZohoDeal, corpus: list[CaseStudy]) -> list[dict]:
+    return [{"name": m.case.name, "industry": m.case.industry, "service_line": m.case.service_line,
+             "content": m.case.content, "why": match_reason(m),
+             "industry_match": m.industry_match} for m in match_case_studies(deal, corpus)]
+
+
+def _smes(deal: ZohoDeal, find_team) -> list[dict]:
+    """Active Practus people with a real industry, service-line or CV match (the ICP bot's P3
+    team matcher, deterministic, no extra Claude call)."""
+    service_line = (deal.problem_areas or [None])[0] or deal.services
+    try:
+        people = find_team(industry=deal.industry, service_line=service_line, keyword_context=query_text(deal), limit=10)
+    except Exception:
+        return []
+    out = []
+    for p in people:
+        if p.get("status") != "Active" or not (p.get("industry_match") or p.get("service_line_match") or p.get("keyword_hits")):
+            continue
+        why = []
+        if p.get("industry_match"):
+            why.append("industry experience")
+        if p.get("service_line_match"):
+            why.append("service line")
+        if p.get("keyword_hits"):
+            why.append("CV mentions " + ", ".join(p["keyword_hits"][:3]))
+        if p.get("named_clients"):
+            why.append("clients include " + ", ".join(p["named_clients"][:3]))
+        out.append({"name": p["name"], "grade": p.get("grade"), "why": "; ".join(why)})
+    return out[:MAX_SMES]
+
+
+MAX_SMES = 2
+
+
+def capability_for(deal: ZohoDeal, corpus: list[CaseStudy], *, find_cases=None, rerank=None, find_team=None) -> Capability:
+    """The ICP bot's P2 case-study match with its one Claude re-rank, falling back to our strict
+    deterministic match if the re-rank fails; plus up to two active SMEs from its P3 matcher."""
+    from api.icp import p2_case_study_matcher as p2
+    from api.icp import p3_team_matcher as p3
+
+    find_cases = find_cases or p2.find_case_study_matches
+    rerank = rerank or p2.rerank_case_studies_with_llm
+    find_team = find_team or p3.find_team_matches
+
+    context = query_text(deal)
+    cases, reranked = [], False
+    try:
+        candidates = find_cases(problem_context=context, industry=deal.industry, geography=_geography(deal))
+        picked = rerank(candidates, problem_context=context, limit=MAX_CASE_STUDIES) if candidates else []
+        if picked and all("llm_rationale" in c for c in picked):
+            reranked = True
+            cases = [{"name": c["name"], "industry": c.get("industry"), "service_line": c.get("service_line"),
+                      "content": c.get("content") or "", "why": c["llm_rationale"],
+                      "industry_match": bool(c.get("industry_match"))} for c in picked]
+    except Exception:
+        cases = []
+    if not reranked:  # never let the re-rank's fallback (top keyword scores, possibly zero) stand as proof
+        cases = _deterministic_cases(deal, corpus)
+    return Capability(cases=cases, smes=_smes(deal, find_team), reranked=reranked)

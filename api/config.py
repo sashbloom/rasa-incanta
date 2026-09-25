@@ -8,6 +8,7 @@ unset, so a .env copied from .env.example behaves like an empty environment.
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -37,7 +38,19 @@ class Settings(BaseSettings):
     # Language model (Brick 2 onwards)
     anthropic_api_key: str = ""
     llm_model_actions: str = "claude-sonnet-5"
-    llm_model_extraction: str = "claude-haiku-4-5-20251001"
+    llm_model_extraction: str = "claude-haiku-4-5-20251001"  # mail key points
+    llm_model_icp: str = "claude-sonnet-5"  # ICP interpretation, research and Setu re-rank (the ICP bot's model)
+
+    # ICP scoring (ported from the ICP bot). Exa powers its web research; without a key those
+    # criteria become data gaps, as in the ICP bot. Results are cached per company.
+    exa_api_key: str = ""
+    icp_cache_days: int = 28
+    icp_concurrency: int = 4  # companies scored in parallel during a run
+
+    # LLM observability, shared Practus Langfuse project; our tag is rasa-incanta. Unset = no-op.
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_baseurl: str = "https://cloud.langfuse.com"
 
     # Zoho CRM, read-only Postgres copy `zoho_data` (Brick 2). Preferred over the API below.
     # Either one connection string (the ICP bot's format) or the separate parts; the URL wins.
@@ -57,15 +70,18 @@ class Settings(BaseSettings):
     zoho_refresh_token: str = ""
 
     # Read.ai through Myrah, weekly import (Brick 3)
-    readai_client_id: str = ""
-    readai_client_secret: str = ""
-    readai_refresh_token: str = ""
+    # Read.ai meeting webhook: the signing key Read.ai issues for the workspace webhook, raw or base64.
+    # Unset = every delivery is refused.
+    readai_webhook_secret: str = Field(
+        default="", validation_alias=AliasChoices("readai_webhook_secret", "readai_webhook_signing_key"))
 
     # Outlook through Myrah, Microsoft Graph, read-only (Brick 3)
     ms_tenant_id: str = ""
     ms_client_id: str = ""
     ms_client_secret: str = ""
     myrah_mailbox: str = ""
+    # Delegated Graph sign-in (Myrah signs in once). Must be registered on the app registration.
+    ms_redirect_uri: str = "http://localhost/callback"
 
     # Setu, read-only Postgres mirror `wisible_data` (Brick 3). Same rule: the URL wins.
     setu_db_url: str = ""

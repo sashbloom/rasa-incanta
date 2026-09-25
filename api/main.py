@@ -6,15 +6,18 @@ Every route answers both at `/` and under `/reports/rasa-incanta/` (see `api/pre
 """
 import logging
 import os
+import secrets
 import threading
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response
+import httpx
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from sqlalchemy import select, text, update
+from pydantic import BaseModel
+from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import Session
 
 from api import __version__
@@ -22,8 +25,9 @@ from api.config import REPORT_PREFIX, get_settings
 from api.db import get_session, get_sessionmaker
 from api.domain.weeks import week_start
 from api.engine.run import run_week
-from api.models import Run
+from api.models import Meeting, Run
 from api.prefix import MountUnderPrefix
+from api.sources import outlook, readai
 from api.sources.setu import fetch_case_studies
 from api.sources.zoho import fetch_deals
 from api.views import deal_view, deals_view, run_payload, week_view
@@ -96,9 +100,10 @@ _run_lock = threading.Lock()
 
 
 def run_sources() -> dict:
-    """What a run reads from and drafts with. Tests override this dependency with fakes."""
-    return {"fetch": fetch_deals, "fetch_setu": fetch_case_studies,
-            "llm_client": None}  # None = the real Claude client from settings
+    """What a run reads from and drafts with. Tests override this dependency with fakes.
+    None means the real source (or, for llm_client, the Claude client from settings)."""
+    return {"fetch": fetch_deals, "fetch_setu": fetch_case_studies, "fetch_mail": None,
+            "capability_fn": None, "score_company_fn": None, "llm_client": None}
 
 
 def mark_interrupted_runs() -> None:
@@ -118,6 +123,8 @@ def execute_run(run_id: uuid.UUID, sources: dict) -> None:
             try:
                 run_week(session, get_settings(), fetch=sources["fetch"], llm_client=sources["llm_client"],
                          fetch_setu=sources.get("fetch_setu", fetch_case_studies),
+                         fetch_mail=sources.get("fetch_mail"), capability_fn=sources.get("capability_fn"),
+                         score_company_fn=sources.get("score_company_fn"),
                          nba_limit=None, run=session.get(Run, run_id))
             except Exception as exc:
                 logger.exception("Run %s crashed", run_id)  # the detail stays in the server log
@@ -159,6 +166,93 @@ def latest_run(session: Session = Depends(get_session)) -> dict:
     if run is None:
         raise HTTPException(404, "No runs yet.")
     return run_payload(run)
+
+
+# ---------------------------------------------------------------- Read.ai webhook
+
+@fastapi_app.post("/api/webhooks/readai", include_in_schema=False)
+async def readai_webhook(request: Request, session: Session = Depends(get_session)) -> Response:
+    """Read.ai's signed workspace webhook. 401 for anything unverifiable (never 2xx, so a genuine
+    retry is not mistaken for delivered), 500 on a processing error so Read.ai retries, 204 for a
+    duplicate or a meeting_start, 202 when a meeting is stored."""
+    body = await request.body()
+    if len(body) > readai.MAX_BODY_BYTES:
+        return Response(status_code=413)
+    try:
+        outcome = readai.handle_delivery(session, body, request.headers.get("x-read-signature"),
+                                         get_settings().readai_webhook_secret)
+    except readai.WebhookRejected as exc:
+        logger.warning("Read.ai webhook rejected: %s", exc)
+        return Response(status_code=401)
+    except Exception:
+        logger.exception("Read.ai webhook delivery could not be processed")
+        session.rollback()
+        return Response(status_code=500)
+    return Response(status_code=202 if outcome == "stored" else 204)
+
+
+# ---------------------------------------------------------------- sources and the Outlook sign-in
+
+_OUTLOOK_STATES: dict[str, datetime] = {}  # one-time sign-in states, valid for 15 minutes
+_STATE_TTL = timedelta(minutes=15)
+_states_lock = threading.Lock()
+
+
+def _take_state(state: str) -> bool:
+    now = datetime.now(timezone.utc)
+    with _states_lock:
+        for key, expires in list(_OUTLOOK_STATES.items()):
+            if expires < now:
+                del _OUTLOOK_STATES[key]
+        return _OUTLOOK_STATES.pop(state, None) is not None
+
+
+class OutlookFinish(BaseModel):
+    redirect_url: str
+
+
+@fastapi_app.get("/api/sources")
+def sources_status(session: Session = Depends(get_session)) -> dict:
+    """Where each source stands: the latest run's status per source, the Outlook connection,
+    and how many Read.ai meetings have arrived."""
+    settings = get_settings()
+    latest = session.scalar(select(Run).order_by(Run.started_at.desc()).limit(1))
+    return {
+        "last_run": run_payload(latest) if latest else None,
+        "outlook": outlook.status(session, settings),
+        "readai": {"configured": bool(settings.readai_webhook_secret),
+                   "meetings": session.scalar(select(func.count()).select_from(Meeting)),
+                   "webhook_path": "/api/webhooks/readai"},
+        "exa": {"configured": bool(settings.exa_api_key)},
+        "anthropic": {"configured": bool(settings.anthropic_api_key)},
+    }
+
+
+@fastapi_app.post("/api/outlook/connect/start")
+def outlook_connect_start() -> dict:
+    state = secrets.token_urlsafe(24)
+    try:
+        url = outlook.authorization_url(get_settings(), state)
+    except outlook.OutlookError as exc:
+        raise HTTPException(400, str(exc))
+    with _states_lock:
+        _OUTLOOK_STATES[state] = datetime.now(timezone.utc) + _STATE_TTL
+    return {"authorize_url": url}
+
+
+@fastapi_app.post("/api/outlook/connect/finish")
+def outlook_connect_finish(body: OutlookFinish, session: Session = Depends(get_session)) -> dict:
+    settings = get_settings()
+    try:
+        code = outlook.code_from_redirect(body.redirect_url, _take_state)
+        with httpx.Client(timeout=30.0) as http:
+            account = outlook.connect(session, settings, code, http)
+    except outlook.OutlookError as exc:
+        raise HTTPException(400, str(exc))
+    except httpx.HTTPError as exc:
+        logger.warning("Outlook sign-in could not reach Microsoft: %s", exc)
+        raise HTTPException(502, "Could not reach Microsoft to finish the sign-in. Try again.")
+    return {"connected": True, "account": account}
 
 
 @fastapi_app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"], include_in_schema=False)

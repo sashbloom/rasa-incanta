@@ -72,6 +72,23 @@ Claude call per deal. Runs never overlap.
 
 `python -m api.cli run` still exists for one deal from a terminal (`--deal <zoho id>`).
 
+### Connect the sources (once, on Railway)
+
+The **Sources** page shows each source's status from the latest run.
+
+- **Outlook:** register `MS_REDIRECT_URI` (default `http://localhost/callback`) on the app
+  registration, then press Connect Outlook on the Sources page, sign in as Myrah and paste the
+  address the browser lands on. Only Myrah's own sign-in is accepted. `MS_CLIENT_SECRET` must be
+  the secret's value, not its ID.
+- **Read.ai:** in Read.ai add a workspace webhook for "meeting end" pointed at the address the
+  Sources page shows (`https://<domain>/reports/rasa-incanta/api/webhooks/readai`), and set
+  `READAI_WEBHOOK_SECRET` to the signing key Read.ai gives you.
+- **ICP:** set `EXA_API_KEY`. The first run scores every company (several minutes each, four at a
+  time, so expect hours for 83); later runs reuse scores for 28 days.
+
+Rough Claude cost: about one re-rank and one NBA call per deal per run, one small key-points call
+per deal with mail, and a few large calls per company the first time it is ICP-scored.
+
 ## Deploy on Railway
 
 1. Push to the private GitHub repo and deploy it as one service; Railway reads `railway.toml`
@@ -99,5 +116,5 @@ curl --path-as-is "$S/%2e%2e%2f%2e%2e%2f%2e%2e%2fetc/passwd"          # must not
 |---|---|
 | 1. Skeleton | Done: settings, schema, health check, Docker, Railway |
 | 2. Thin slice | Built: Zoho Postgres source, deal upsert, weekly snapshots, minimal context cards, one evidence-checked NBA from Claude. Waiting on `ZOHO_PG_*` and `ANTHROPIC_API_KEY` for the first real run |
-| 3. All signals (in progress) | Done: conversation from the Zoho outreach log (all deals), Setu case studies as capability (42 of 83 real deals). Waiting: Outlook (credentials), Read.ai, ICP scoring |
+| 3. All signals | Built: all five signals. Conversation from the Zoho outreach log, Read.ai webhook meetings and delegated Outlook mail (with key points); capability from Setu with the Claude re-rank and SMEs; account fit and stakeholder from the full ICP port (cached 4 weeks); name matching. First live run happens on Railway |
 | Report standard | Done: `api/` + `frontend/` layout, one process at `/` and `/reports/rasa-incanta/`, React board (My week, deal detail), 100 tests. Board open, no sign-in; identity code and user schema kept, unwired |

@@ -224,3 +224,63 @@ class Decision(Timestamped, Base):
     review_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("deal_reviews.id"), index=True)
     recommendation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("recommendations.id"), index=True)
     selected: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class OAuthToken(Timestamped, Base):
+    """A delegated OAuth grant we refresh unattended, e.g. Microsoft Graph for Myrah's mailbox.
+    Refresh tokens rotate on every use, so they live here, never only in environment variables."""
+
+    __tablename__ = "oauth_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    provider: Mapped[str] = mapped_column(String(40), unique=True)  # e.g. "microsoft_graph"
+    account: Mapped[str] = mapped_column(String(320))  # the mailbox that consented, lower-case
+    access_token: Mapped[str] = mapped_column(Text)
+    refresh_token: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    scope: Mapped[str | None] = mapped_column(String(300))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class Meeting(Timestamped, Base):
+    """A Read.ai meeting delivered by the signed webhook. Transcripts are deliberately not stored:
+    only the summary, action items and topics are ever used, and only as excerpts."""
+
+    __tablename__ = "meetings"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    meeting_id: Mapped[str] = mapped_column(String(200), unique=True)  # Read.ai session_id
+    request_id: Mapped[str | None] = mapped_column(String(200), index=True)  # Read.ai's dedupe key
+    title: Mapped[str | None] = mapped_column(Text)
+    start_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    end_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    platform: Mapped[str | None] = mapped_column(String(50))
+    report_url: Mapped[str | None] = mapped_column(Text)
+    summary: Mapped[str | None] = mapped_column(Text)
+    owner: Mapped[dict] = mapped_column(JSONType, default=dict)
+    participants: Mapped[list] = mapped_column(JSONType, default=list)  # [{name, email}]
+    participant_domains: Mapped[list] = mapped_column(JSONType, default=list)  # lower-case, for matching
+    action_items: Mapped[list] = mapped_column(JSONType, default=list)
+    key_questions: Mapped[list] = mapped_column(JSONType, default=list)
+    topics: Mapped[list] = mapped_column(JSONType, default=list)
+    chapter_summaries: Mapped[list] = mapped_column(JSONType, default=list)
+    source: Mapped[str] = mapped_column(String(20), default="webhook")
+
+
+class CompanyIcp(Timestamped, Base):
+    """One ICP scoring of one company (the ICP bot's pipeline). Append-only: a rescore adds a row,
+    and a run reuses the newest `scored` or `gate_1_stopped` row younger than ICP_CACHE_DAYS.
+    Failures are recorded but never reused, so they are retried on the next run."""
+
+    __tablename__ = "company_icp"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    company_key: Mapped[str] = mapped_column(String(300), index=True)  # normalised company name
+    company_name: Mapped[str] = mapped_column(String(300))
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, default=utcnow)
+    status: Mapped[str] = mapped_column(String(20))  # scored | gate_1_stopped | failed
+    account_fit: Mapped[dict] = mapped_column(JSONType, default=dict)
+    stakeholder: Mapped[dict] = mapped_column(JSONType, default=dict)
+    result: Mapped[dict] = mapped_column(JSONType, default=dict)  # the full ScoreResult and interpretations
+    data_gaps: Mapped[list] = mapped_column(JSONType, default=list)
+    error: Mapped[str | None] = mapped_column(Text)

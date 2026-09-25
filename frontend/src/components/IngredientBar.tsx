@@ -30,7 +30,7 @@ export function trustNote(segments: Segment[]): string {
   const present = segments.filter((s) => s.present)
   if (present.length === segments.length) return ''
   if (present.length === 0) return 'No signals yet for this deal.'
-  const sources = [...new Set(present.map((s) => s.source).filter(Boolean))].join(' and ')
+  const sources = [...new Set(present.flatMap((s) => s.sources ?? []))].join(', ')
   const names = present.map((s) => s.name.toLowerCase()).join(' and ')
   return `These actions use ${names}${sources ? ` from ${sources}` : ''} only.`
 }

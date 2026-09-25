@@ -38,6 +38,18 @@ function ActionItem({ action }: { action: Action }) {
             </span>
           ))}
         </dd>
+        {action.proof?.name && (
+          <>
+            <dt className="t-label leading-6">Proof</dt>
+            <dd className="m-0">{action.proof.name}{action.proof.why ? `: ${action.proof.why}` : ''}</dd>
+          </>
+        )}
+        {action.sme && (
+          <>
+            <dt className="t-label leading-6">SME</dt>
+            <dd className="m-0">{action.sme}</dd>
+          </>
+        )}
         {action.effort && (
           <>
             <dt className="t-label leading-6">Effort</dt>
@@ -47,6 +59,15 @@ function ActionItem({ action }: { action: Action }) {
       </dl>
     </article>
   )
+}
+
+function icpLine(icp: Detail['icp']): string | null {
+  if (!icp) return null
+  if (icp.status === 'gate_1_stopped') return 'Could not score: company not identified'
+  const lenses = icp.provisional
+    ? `client ${icp.client_verdict?.toLowerCase()}, provisional`
+    : `client ${icp.client_total}/50, Practus ${icp.practus_total}/50`
+  return `${icp.recommendation} (${lenses})`
 }
 
 export function DealDetail({ dealId, backTo, reloadKey = 0 }: { dealId: string; backTo: string; reloadKey?: number }) {
@@ -83,6 +104,7 @@ export function DealDetail({ dealId, backTo, reloadKey = 0 }: { dealId: string; 
         <Field label="Last touch" value={shortDate(deal.last_touch)} />
         <Field label="Company" value={deal.account_name} />
         <Field label="Contact" value={deal.contact_name} />
+        <Field label="ICP" value={icpLine(deal.icp)} />
       </dl>
 
       <IngredientBar key={deal.id} segments={deal.segments} />

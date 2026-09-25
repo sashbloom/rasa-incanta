@@ -1,13 +1,15 @@
 """Build a deal's context card: the five input signals, each carrying the sourced facts
 it rests on, plus gap flags for whatever a source could not provide.
 
-Zoho fills `deal_state` (CRM fields), the Zoho contact in `stakeholder` when there is one, and
-`conversation` from the deal's outreach log (who was met, how, when, and the notes). Setu fills
-`capability` with the closest case studies (see engine/capability.py). ICP logic (copied from the ICP bot), Read.ai, Outlook and Setu arrive in Brick 3; until then
-their signals are empty and flagged, so the page and the model both see the gap.
+- `deal_state`: Zoho CRM fields.
+- `conversation`: the deal's Zoho outreach log, its Read.ai meetings and its Outlook mail.
+- `capability`: Setu case studies (the ICP bot's P2 match with its Claude re-rank) and SMEs.
+- `account_fit` and `stakeholder`: the ICP bot's scoring (engine/icp_signal.py).
+- The Zoho contact, when there is one (the mirror has none, so `no_contact` stays).
 
-Every fact has a stable id (e.g. "zoho.stage"). A next best action cites fact ids, and
-the engine rejects any citation that is not on the card.
+Every fact has a stable id (e.g. "zoho.stage", "outlook.mail_1", "icp.recommendation"). A next
+best action cites fact ids, and the engine rejects any citation that is not on the card. Emails
+and phone numbers are scrubbed from every fact, whichever field they were typed into.
 """
 from __future__ import annotations
 
@@ -18,7 +20,9 @@ from zoneinfo import ZoneInfo
 
 from api.domain.gaps import Gap
 from api.domain.stages import board_for
-from api.engine.capability import describe, match_case_studies
+from api.engine.capability import Capability, describe, match_case_studies
+from api.sources.outlook import Mail
+from api.sources.readai import MeetingRecord
 from api.sources.setu import CaseStudy
 from api.sources.zoho import Reachout, ZohoDeal
 
@@ -30,6 +34,9 @@ MAIL_MEDIA = {"email", "e-mail", "mail"}
 MEDIUM_PHRASE = {"teams": "Teams meeting", "in-person": "In-person meeting", "in person": "In-person meeting",
                  "phone": "Phone call", "call": "Call", "email": "Email", "e-mail": "Email"}
 MAX_TOUCHES = 5
+MAX_MEETINGS = 5
+MAX_NOTE_CHARS = 300  # only excerpts go to the model, never whole notes, summaries or bodies
+MAX_NAMES = 4
 
 # Contact details never go on a card or to the model, whichever field they were typed into.
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
@@ -38,7 +45,6 @@ _PHONE = re.compile(r"(?<![\w,.])\+?\d(?:[\s().-]*\d){9,}(?![\w,.])")  # 10+ dig
 
 def scrub(text: str) -> str:
     return _PHONE.sub("[phone removed]", _EMAIL.sub("[email removed]", text))
-MAX_NOTE_CHARS = 300  # only excerpts go to the model, never whole notes
 
 
 @dataclass
@@ -90,58 +96,137 @@ def _money(amount: float | None, currency: str | None) -> str | None:
 
 
 def _excerpt(text: str, limit: int = MAX_NOTE_CHARS) -> str:
+    text = " ".join((text or "").split())
     return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "..."
 
 
-def conversation_signal(reachouts: list[Reachout]) -> tuple[dict, list[Gap]]:
-    """The conversation signal from the outreach log, newest first, and the gaps it leaves."""
-    recent = sorted(reachouts, key=lambda r: r.on or date.min, reverse=True)[:MAX_TOUCHES]
+def _short(text: str, limit: int = 40) -> str:
+    """A chip-sized label: what the fact is (a subject, a meeting title, a case-study name)."""
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "..."
+
+
+def _names(people, limit: int = MAX_NAMES) -> str:
+    names = [p.get("name") for p in people if isinstance(p, dict) and p.get("name")]
+    return ", ".join(names[:limit]) + (f" and {len(names) - limit} more" if len(names) > limit else "")
+
+
+# ---------------------------------------------------------------- conversation
+
+def _reachout_facts(reachouts: list[Reachout], tz: str) -> list[dict]:
     facts = []
-    for i, r in enumerate(recent, 1):
-        medium = (r.medium or "").strip().lower()
-        what = MEDIUM_PHRASE.get(medium, "Contact logged")
-        who = r.person or "the client"
+    for i, r in enumerate(sorted(reachouts, key=lambda r: r.on or date.min, reverse=True)[:MAX_TOUCHES], 1):
+        what = MEDIUM_PHRASE.get((r.medium or "").strip().lower(), "Contact logged")
         about = ", ".join(x for x in (r.designation, (r.role or "").lower() or None) if x)
-        value = f"{what} with {who}" + (f" ({about})" if about else "")
+        value = f"{what} with {r.person or 'the client'}" + (f" ({about})" if about else "")
         if r.spoc:
             value += f", led by {r.spoc}"
         if r.remarks:
             value += f". Notes: {_excerpt(r.remarks)}"
         if r.replied_on:
             value += f". Client replied {r.replied_on.isoformat()}"
-        facts.append(_fact(f"reachout_{i}", "Outreach log", value, r.on))
+        facts.append(_fact(f"reachout_{i}", "Outreach log", value, r.on, tz))
+    return facts
+
+
+def _meeting_facts(meetings: list[MeetingRecord], tz: str) -> list[dict]:
+    facts = []
+    ordered = sorted(meetings, key=lambda m: m.start_time or datetime.min.replace(tzinfo=ZoneInfo("UTC")), reverse=True)
+    for i, m in enumerate(ordered[:MAX_MEETINGS], 1):
+        value = f"Meeting \"{m.title or 'untitled'}\""
+        if m.participants:
+            value += f" with {_names(m.participants)}"
+        if m.summary:
+            value += f". Summary: {_excerpt(m.summary)}"
+        if m.action_items:
+            value += ". Action items: " + "; ".join(_excerpt(a, 120) for a in m.action_items[:3])
+        facts.append(_fact(f"meeting_{i}", _short(m.title or "Meeting"), value, m.start_time, tz, source="readai"))
+    return facts
+
+
+def _mail_facts(mails: list[Mail], points: dict[int, list[str]], tz: str) -> list[dict]:
+    facts = []
+    for i, m in enumerate(mails, 1):
+        value = f"\"{m.subject}\" from {m.sender_name or m.sender_domain or 'unknown sender'}"
+        if points.get(i):
+            value += ". Key points: " + "; ".join(points[i])
+        elif m.preview:
+            value += f". Preview: {_excerpt(m.preview, 250)}"
+        facts.append(_fact(f"mail_{i}", _short(m.subject), value, m.received, tz, source="outlook"))
+    return facts
+
+
+def conversation_signal(reachouts: list[Reachout], meetings: list[MeetingRecord] = (), mails: list[Mail] = (),
+                        mail_points: dict[int, list[str]] | None = None,
+                        tz: str = "Asia/Kolkata") -> tuple[dict, list[Gap]]:
+    """Outreach log, Read.ai meetings and Outlook mail, each newest first, and the gaps left.
+    A logged call or meeting on the outreach log, or any Read.ai meeting, clears no_call_logged;
+    an email on the outreach log or any Outlook mail clears no_mail."""
+    reachouts, meetings, mails = list(reachouts), list(meetings), list(mails)
+    facts = _reachout_facts(reachouts, tz) + _meeting_facts(meetings, tz) + _mail_facts(mails, mail_points or {}, tz)
 
     media = {(r.medium or "").strip().lower() for r in reachouts}
     gaps = []
-    if not media & CALL_MEDIA:
+    if not (media & CALL_MEDIA) and not meetings:
         gaps.append(Gap.NO_CALL_LOGGED)
-    if not media & MAIL_MEDIA:
+    if not (media & MAIL_MEDIA) and not mails:
         gaps.append(Gap.NO_MAIL)
     if not facts:
         return {}, gaps
-    dated = [r.on for r in reachouts if r.on]
-    return {"touches": len(reachouts), "last_touch": max(dated).isoformat() if dated else None, "facts": facts}, gaps
+
+    days = [d for d in (f["date"] for f in facts) if d]
+    signal = {"touches": len(reachouts), "last_touch": max(days) if days else None, "facts": facts}
+    if meetings:
+        latest = max(meetings, key=lambda m: m.start_time or datetime.min.replace(tzinfo=ZoneInfo("UTC")))
+        signal["meetings"] = len(meetings)
+        signal["last_meeting"] = {"date": (_day(latest.start_time, tz) or date.min).isoformat() if latest.start_time else None,
+                                  "title": latest.title}
+    if mails:
+        signal["mails"] = len(mails)
+        signal["last_mail"] = {"date": _day(mails[0].received, tz).isoformat() if mails[0].received else None,
+                               "subject": mails[0].subject, "key_points": (mail_points or {}).get(1, [])}
+    return signal, gaps
 
 
-def capability_signal(deal: ZohoDeal, case_studies: list[CaseStudy] | None) -> tuple[dict, list[Gap]]:
-    """The closest Setu case studies as citable facts; `None` means Setu was not available."""
-    matches = match_case_studies(deal, case_studies or [])
-    if not matches:
-        return {}, [Gap.NO_SETU_MATCH]
-    facts = []
-    for i, m in enumerate(matches, 1):
-        value = describe(m) + (f" {_excerpt(m.case.content)}" if m.case.content else "")
-        facts.append(_fact(f"case_{i}", "Case study", value, source="setu"))
+# ---------------------------------------------------------------- capability
+
+def capability_signal(deal: ZohoDeal, case_studies: list[CaseStudy] | None,
+                      capability: Capability | None = None) -> tuple[dict, list[Gap]]:
+    """Case studies (and SMEs) as citable facts. With `capability` (the re-ranked result) its picks
+    are used; otherwise the strict deterministic match over `case_studies`. `None` for both means
+    Setu was not available."""
+    if capability is None:
+        matches = match_case_studies(deal, case_studies or [])
+        cases = [{"name": m.case.name, "industry": m.case.industry, "service_line": m.case.service_line,
+                  "content": m.case.content, "text": describe(m), "industry_match": m.industry_match,
+                  "keyword_hits": list(m.keyword_hits), "score": m.score} for m in matches]
+        smes, reranked = [], False
+    else:
+        cases = [{**c, "text": f"{c['name']}" + (f" ({', '.join(x for x in (c.get('industry'), c.get('service_line')) if x)})"
+                                                 if c.get("industry") or c.get("service_line") else "")
+                  + f". Why it fits: {c['why']}"} for c in capability.cases]
+        smes, reranked = capability.smes, capability.reranked
+
+    facts = [_fact(f"case_{i}", _short(c["name"]), c["text"] + (f" {_excerpt(c['content'])}" if c.get("content") else ""),
+                   source="setu") for i, c in enumerate(cases, 1)]
+    facts += [_fact(f"sme_{i}", f"SME {s['name']}", f"{s['name']}" + (f" ({s['grade']})" if s.get("grade") else "")
+                    + (f": {s['why']}" if s.get("why") else ""), source="setu") for i, s in enumerate(smes, 1)]
+    if not cases:
+        return ({"smes": smes, "facts": facts} if facts else {}), [Gap.NO_SETU_MATCH]
     return {
-        "case_studies": [{"name": m.case.name, "industry": m.case.industry, "service_line": m.case.service_line,
-                          "industry_match": m.industry_match, "keyword_hits": list(m.keyword_hits),
-                          "score": m.score} for m in matches],
-        "facts": facts,
+        "case_studies": [{k: v for k, v in c.items() if k not in ("content", "text")} for c in cases],
+        "smes": smes, "reranked": reranked, "facts": facts,
     }, []
 
 
+# ---------------------------------------------------------------- the card
+
 def build_card(deal: ZohoDeal, today: date, tz: str = "Asia/Kolkata", reachouts: list[Reachout] = (),
-               case_studies: list[CaseStudy] | None = None) -> CardContent:
+               case_studies: list[CaseStudy] | None = None, *, meetings: list[MeetingRecord] = (),
+               mails: list[Mail] = (), mail_points: dict[int, list[str]] | None = None,
+               capability: Capability | None = None, icp: tuple[dict, dict, str] | None = None) -> CardContent:
+    """`icp` is (account_fit, stakeholder, status) from engine/icp_signal.py, or None when the
+    company has no ICP scoring yet."""
     days_in_stage = _days_between(deal.stage_entered_at, today, tz)
     days_since_touch = _days_between(deal.modified_at, today, tz)
 
@@ -181,17 +266,21 @@ def build_card(deal: ZohoDeal, today: date, tz: str = "Asia/Kolkata", reachouts:
         "facts": facts,
     }
 
-    conversation, conversation_gaps = conversation_signal(list(reachouts))
-    capability, capability_gaps = capability_signal(deal, case_studies)
-    gaps = [Gap.NO_ICP, *conversation_gaps, *capability_gaps]  # ICP scoring arrives later in Brick 3
-    stakeholder: dict = {}
+    conversation, conversation_gaps = conversation_signal(list(reachouts), list(meetings), list(mails), mail_points, tz)
+    capability_sig, capability_gaps = capability_signal(deal, case_studies, capability)
+
+    account_fit, icp_stakeholder, icp_status = icp if icp else ({}, {}, None)
+    gaps = ([] if icp_status == "scored" else [Gap.NO_ICP]) + conversation_gaps + capability_gaps
+
+    stakeholder_facts = list(icp_stakeholder.get("facts", []))
+    stakeholder: dict = {k: v for k, v in icp_stakeholder.items() if k != "facts"}
     if deal.contact_name:
-        stakeholder = {
-            "contact_name": deal.contact_name,
-            "facts": [_fact("contact", "Contact", deal.contact_name)],
-        }
+        stakeholder["contact_name"] = deal.contact_name
+        stakeholder_facts.insert(0, _fact("contact", "Contact", deal.contact_name))
     else:
         gaps.append(Gap.NO_CONTACT)
+    if stakeholder_facts:
+        stakeholder["facts"] = stakeholder_facts
 
-    return CardContent(stakeholder=stakeholder, conversation=conversation, capability=capability,
-                       deal_state=deal_state, gaps=[g.value for g in gaps])
+    return CardContent(account_fit=dict(account_fit), stakeholder=stakeholder, conversation=conversation,
+                       capability=capability_sig, deal_state=deal_state, gaps=[g.value for g in gaps])

@@ -107,7 +107,7 @@ def test_at_most_three_matches():
 def test_matches_become_setu_facts_and_clear_the_gap():
     card = build_card(northwind(), TODAY, case_studies=corpus())
     facts = card.capability["facts"]
-    assert facts[0]["id"] == "setu.case_1" and facts[0]["source"] == "setu" and facts[0]["label"] == "Case study"
+    assert facts[0]["id"] == "setu.case_1" and facts[0]["source"] == "setu" and facts[0]["label"] == "Patisserie & Bakes"  # the chip names the case
     assert facts[0]["value"].startswith("Patisserie & Bakes (Food Processing, Strategic Finance Transformation). "
                                         "Matched on same industry")
     assert "Problem: rapid multi-city expansion" in facts[0]["value"]

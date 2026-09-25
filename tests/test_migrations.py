@@ -4,7 +4,7 @@ from sqlalchemy import create_engine, inspect
 from tests.conftest import alembic_config
 
 EXPECTED_TABLES = {
-    "users", "user_allowed_sbus", "user_aliases", "runs", "deals", "deal_snapshots",
+    "users", "user_allowed_sbus", "user_aliases", "oauth_tokens", "meetings", "company_icp", "runs", "deals", "deal_snapshots",
     "context_cards", "recommendations", "deal_reviews", "decisions",
 }
 
