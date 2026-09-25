@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     llm_model_extraction: str = "claude-haiku-4-5-20251001"
 
     # Zoho CRM, read-only Postgres copy `zoho_data` (Brick 2). Preferred over the API below.
+    # Either one connection string (the ICP bot's format) or the separate parts; the URL wins.
+    zoho_db_url: str = ""
     zoho_pg_host: str = ""
     zoho_pg_port: int = 5432
     zoho_pg_database: str = "zoho_data"
@@ -65,8 +67,14 @@ class Settings(BaseSettings):
     ms_client_secret: str = ""
     myrah_mailbox: str = ""
 
-    # Setu, read-only Postgres (Brick 3)
-    setu_database_url: str = ""
+    # Setu, read-only Postgres mirror `wisible_data` (Brick 3). Same rule: the URL wins.
+    setu_db_url: str = ""
+    setu_pghost: str = ""
+    setu_pgport: int = 5432
+    setu_pgdatabase: str = ""
+    setu_pguser: str = ""
+    setu_pgpassword: str = ""
+    setu_pgsslmode: str = "require"
 
     @property
     def is_local(self) -> bool:
@@ -83,8 +91,20 @@ class Settings(BaseSettings):
         return url
 
     @property
+    def zoho_db(self) -> dict | None:
+        """psycopg connection arguments for the Zoho copy, or None when it is not configured."""
+        return pg_target(self.zoho_db_url, self.zoho_pg_host, self.zoho_pg_port, self.zoho_pg_database,
+                         self.zoho_pg_user, self.zoho_pg_password, self.zoho_pg_sslmode)
+
+    @property
+    def setu_db(self) -> dict | None:
+        """psycopg connection arguments for the Setu mirror, or None when it is not configured."""
+        return pg_target(self.setu_db_url, self.setu_pghost, self.setu_pgport, self.setu_pgdatabase,
+                         self.setu_pguser, self.setu_pgpassword, self.setu_pgsslmode)
+
+    @property
     def zoho_pg_configured(self) -> bool:
-        return bool(self.zoho_pg_host and self.zoho_pg_user and self.zoho_pg_password)
+        return self.zoho_db is not None
 
     def startup_warnings(self) -> list[str]:
         warnings: list[str] = []
@@ -94,9 +114,24 @@ class Settings(BaseSettings):
             warnings.append("DATABASE_URL points at SQLite outside local; set it to the Railway Postgres URL.")
         if not self.is_local and not self.anthropic_api_key:
             warnings.append("ANTHROPIC_API_KEY is empty; recommendation generation will be skipped.")
+        if self.zoho_db_url and self.zoho_pg_host:
+            warnings.append("ZOHO_DB_URL and ZOHO_PG_HOST are both set; using ZOHO_DB_URL.")
+        if self.setu_db_url and self.setu_pghost:
+            warnings.append("SETU_DB_URL and SETU_PGHOST are both set; using SETU_DB_URL.")
         if not self.is_local and not self.zoho_pg_configured:
             warnings.append("ZOHO_PG_HOST, ZOHO_PG_USER or ZOHO_PG_PASSWORD is empty; runs cannot pull deals.")
         return warnings
+
+
+def pg_target(url: str, host: str, port: int, dbname: str, user: str, password: str, sslmode: str) -> dict | None:
+    """One Postgres source's connection arguments. A connection string wins over the separate parts;
+    the parts need at least host, user and password. None means the source is not configured."""
+    if url.strip():
+        return {"conninfo": url.strip()}
+    if host and user and password:
+        target = {"host": host, "port": port, "user": user, "password": password, "sslmode": sslmode}
+        return {**target, "dbname": dbname} if dbname else target
+    return None
 
 
 @lru_cache

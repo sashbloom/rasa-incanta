@@ -1,3 +1,5 @@
+import pytest
+
 from datetime import datetime, timezone
 
 from api.sources.zoho import (
@@ -106,3 +108,27 @@ def test_fetch_failure_reports_instead_of_raising():
 def test_fetch_without_a_deals_table():
     result = fetch_deals(settings(), connect_fn=zoho_connect(FakeConnection(columns=[])))
     assert not result.ok and "public.deals" in result.error
+
+
+@pytest.mark.parametrize("overrides, expected", [
+    ({"zoho_db_url": "postgresql://r:x@db.example/zoho_data?sslmode=require"},
+     {"conninfo": "postgresql://r:x@db.example/zoho_data?sslmode=require"}),
+    ({}, {"host": "zoho.example", "user": "ri_reader", "password": "x", "port": 5432, "sslmode": "require",
+          "dbname": "zoho_data"}),
+])
+def test_connect_hands_psycopg_the_url_or_the_parts(monkeypatch, overrides, expected):
+    import api.sources.zoho as zoho
+
+    seen = {}
+
+    class Conn:
+        read_only = False
+
+    def fake_connect(**kwargs):
+        seen.update(kwargs)
+        return Conn()
+
+    monkeypatch.setattr(zoho.psycopg, "connect", fake_connect)
+    conn = zoho.connect(settings(**overrides))
+    assert {k: seen[k] for k in expected} == expected
+    assert conn.read_only is True  # read-only whichever way we connect

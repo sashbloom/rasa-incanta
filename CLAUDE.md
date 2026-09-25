@@ -70,19 +70,27 @@ account-fit and stakeholder logic is copied into this codebase, not called over 
   bot's `.env.example`). If its `Database_Guide.md` shows the Deals fields listed below, prefer our
   own read-only login to it over the Zoho API: plain SQL, no tokens. Otherwise use the Zoho API with a
   Myrah self-client. Azure Postgres needs `sslmode=require`.
-  What we know of the copy (from the ICP bot and Finance agent code, not yet from our own login):
-  tables live in `public`; `deals` has snake_case columns (`deal_name`, `stage`, `ep_involved`,
-  `date_proposal_sent`, `modified_time`, ...), owner via `owner_id` -> `users.full_name`, company via
-  `account_id` -> `accounts.account_name`. The contact's shape is unconfirmed, so `sources/zoho.py`
-  reads `information_schema` and joins only what exists.
+  Confirmed from `icp-bot/Database_Guide.md` and `icp-bot/schema.sql`: tables live in `public`;
+  owner via `deals.owner_id` -> `users.full_name`, company via `deals.account_id` ->
+  `accounts.account_name`; `sbu`, `client_problem_statement`, `nature_of_potential`, `problem_area_1/2`
+  and every `date_became_*` / `date_proposal_sent` column exist. There is no `business_area`,
+  `problem_statement_1..3` or `stage_modified_time` (the code tolerates their absence).
+  **The mirror has no contacts:** `deals.contact_id` is a Zoho Contacts ID and the Contacts module
+  was never exported, so the Postgres path gives no contact name and every card flags `no_contact`.
+  Timestamps are `TIMESTAMP` without a zone; we treat them as UTC (unverified).
+  `reachout_tracker` (BD calls, emails and meetings per deal, with `client_contact_name`) is a
+  candidate Brick 3 signal.
+- **ICP bot repo:** a read-only reference clone at `icp-bot/` (gitignored, excluded from pytest and
+  Docker). Read it, never edit or commit it. `icp-bot/Database_Guide.md` holds a plaintext login:
+  never copy it into this repo, tests, docs or memory.
 - **Setu:** read-only Postgres mirror `wisible_data` (case studies, team roster). Database only.
 - **Outlook:** Microsoft Graph with an app registration (tenant, client ID, client secret) and
   Mail.Read limited to Myrah's mailbox. No refresh token to store.
 - **Read.ai:** our own OAuth client for a weekly import (no webhook of our own). Refresh tokens can
   rotate, so store tokens in our Postgres (an `oauth_tokens` table), never only in env vars. The ICP
   bot's `readai_oauth_setup.py` and `readai_backfill_cli.py` are a useful reference.
-- **ICP logic:** copied from the ICP bot's code (`PPP report/backend`, e.g. `agents/nodes/score_icp_v2.py`
-  and `skills/icp-qualification`) into our own module, run on our own data. No call to the ICP bot,
+- **ICP logic:** copied from the ICP bot's code (`icp-bot/backend/domains/mahak/people/mahak/icp/`,
+  e.g. `scorer.py`, `gates.py`, `criteria_tables.py`, `persona.py`) into our own module, run on our own data. No call to the ICP bot,
   no `ICP_BOT_*` settings. Cache a company's result for 4 weeks.
 - **LLM observability:** follow the Practus platform convention. Every agent uses the same shared
   Langfuse project and keys (`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASEURL`), and

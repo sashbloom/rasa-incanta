@@ -278,16 +278,7 @@ Connect = Callable[[Settings], Any]
 
 
 def connect(settings: Settings) -> psycopg.Connection:
-    conn = psycopg.connect(
-        host=settings.zoho_pg_host,
-        port=settings.zoho_pg_port,
-        dbname=settings.zoho_pg_database,
-        user=settings.zoho_pg_user,
-        password=settings.zoho_pg_password,
-        sslmode=settings.zoho_pg_sslmode,
-        connect_timeout=15,
-        row_factory=dict_row,
-    )
+    conn = psycopg.connect(**settings.zoho_db, connect_timeout=15, row_factory=dict_row)
     conn.read_only = True  # every transaction on this connection is READ ONLY
     return conn
 
@@ -295,7 +286,7 @@ def connect(settings: Settings) -> psycopg.Connection:
 def fetch_deals(settings: Settings, connect_fn: Connect = connect) -> ZohoResult:
     """All in-scope deals from the Zoho copy. Never raises: failures come back as `error`."""
     if not settings.zoho_pg_configured:
-        return ZohoResult(error="Zoho Postgres is not configured (ZOHO_PG_HOST, ZOHO_PG_USER, ZOHO_PG_PASSWORD).")
+        return ZohoResult(error="Zoho Postgres is not configured: set ZOHO_DB_URL, or ZOHO_PG_HOST, ZOHO_PG_USER and ZOHO_PG_PASSWORD.")
     try:
         with connect_fn(settings) as conn, conn.cursor() as cur:
             cur.execute(_COLUMNS_SQL)

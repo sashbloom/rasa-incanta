@@ -17,3 +17,6 @@ __pycache__/
 node_modules/
 dist/
 api/static/
+
+# ICP bot: a read-only reference clone of its own repo. Read it, never edit or commit it.
+icp-bot/
