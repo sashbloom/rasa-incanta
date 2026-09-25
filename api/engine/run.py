@@ -27,6 +27,7 @@ from api.domain.weeks import local_today, week_start
 from api.engine.context import CardContent, build_card
 from api.engine.nba import generate_nba
 from api.models import ContextCard, Deal, DealSnapshot, Decision, Recommendation, Run
+from api.sources.setu import SetuResult, fetch_case_studies
 from api.sources.zoho import ZohoDeal, ZohoResult, fetch_deals, jsonable
 
 logger = logging.getLogger(__name__)
@@ -96,6 +97,7 @@ def run_week(
     now: datetime | None = None,
     kind: str = "manual",
     fetch: Callable[[Settings], ZohoResult] = fetch_deals,
+    fetch_setu: Callable[[Settings], SetuResult] = fetch_case_studies,
     llm_client: Any | None = None,
     deal_zoho_id: str | None = None,
     nba_limit: int | None = 1,
@@ -114,16 +116,22 @@ def run_week(
     stats: dict[str, Any] = {"sources": {}, "nba_created": 0, "nba_kept": 0, "nba_skipped": []}
     zoho = fetch(settings)
     stats["sources"]["zoho"] = "ok" if zoho.ok else zoho.error
+    if zoho.ok:
+        stats["sources"]["zoho_outreach"] = zoho.reachout_error or "ok"
     if not zoho.ok:
         run.status, run.error, run.stats, run.finished_at = "failed", zoho.error, stats, datetime.now(timezone.utc)
         session.commit()
         return run
 
+    setu = fetch_setu(settings)  # once per run; a Setu failure only costs the capability signal
+    stats["sources"]["setu"] = "ok" if setu.ok else setu.error
+    case_studies = setu.case_studies if setu.ok else None
+
     deals = upsert_deals(session, zoho.deals, now)
     cards: dict[str, CardContent] = {}
     for z in zoho.deals:
         deal = deals[z.zoho_id]
-        card = build_card(z, today, settings.timezone)
+        card = build_card(z, today, settings.timezone, zoho.reachouts.get(z.zoho_id, []), case_studies)
         cards[z.zoho_id] = card
         snapshot = {k: v for k, v in asdict(z).items() if k != "raw"}
         session.add(DealSnapshot(run_id=run.id, deal_id=deal.id, stage=deal.stage, board=deal.board,

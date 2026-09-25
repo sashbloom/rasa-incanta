@@ -42,7 +42,7 @@ def test_run_pulls_deals_builds_cards_and_one_nba(session):
     assert deal.sbu == "India"
     assert rec.objective == "advance" and rec.model == "claude-sonnet-5"
     assert rec.evidence and all(e["source"] == "zoho" for e in rec.evidence)
-    assert "no_call_logged" in rec.gaps
+    assert "no_mail" in rec.gaps and "no_call_logged" not in rec.gaps  # a Teams meeting is on the outreach log
 
 
 def test_rerun_regenerates_undecided_and_keeps_decided(session):
@@ -103,7 +103,7 @@ def test_a_named_deal_gets_the_nba(session):
 
 
 def test_citing_another_deals_facts_is_rejected(session):
-    # Northwind's reply cites a contact and proposal date that Blue Harbour's card does not have.
+    # Northwind's reply cites a proposal date and problem statement that Blue Harbour's card does not have.
     run = run_week(session, settings(), now=NOW, fetch=zoho_fetch(), llm_client=FakeClaude(reply(), reply()),
                    deal_zoho_id="598723000011234002")
     assert count(session, Recommendation) == 0

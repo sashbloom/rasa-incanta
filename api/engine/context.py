@@ -1,8 +1,9 @@
 """Build a deal's context card: the five input signals, each carrying the sourced facts
 it rests on, plus gap flags for whatever a source could not provide.
 
-Brick 2 fills only what Zoho knows: `deal_state` (CRM fields) and the Zoho contact in
-`stakeholder`. ICP logic (copied from the ICP bot), Read.ai, Outlook and Setu arrive in Brick 3; until then
+Zoho fills `deal_state` (CRM fields), the Zoho contact in `stakeholder` when there is one, and
+`conversation` from the deal's outreach log (who was met, how, when, and the notes). Setu fills
+`capability` with the closest case studies (see engine/capability.py). ICP logic (copied from the ICP bot), Read.ai, Outlook and Setu arrive in Brick 3; until then
 their signals are empty and flagged, so the page and the model both see the gap.
 
 Every fact has a stable id (e.g. "zoho.stage"). A next best action cites fact ids, and
@@ -10,15 +11,34 @@ the engine rejects any citation that is not on the card.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from api.domain.gaps import Gap
 from api.domain.stages import board_for
-from api.sources.zoho import ZohoDeal
+from api.engine.capability import describe, match_case_studies
+from api.sources.setu import CaseStudy
+from api.sources.zoho import Reachout, ZohoDeal
 
 SIGNALS = ("account_fit", "stakeholder", "conversation", "capability", "deal_state")
+
+# Outreach channels that count as a logged call or meeting, and as mail.
+CALL_MEDIA = {"teams", "in-person", "in person", "phone", "call", "meeting", "video call", "zoom", "google meet"}
+MAIL_MEDIA = {"email", "e-mail", "mail"}
+MEDIUM_PHRASE = {"teams": "Teams meeting", "in-person": "In-person meeting", "in person": "In-person meeting",
+                 "phone": "Phone call", "call": "Call", "email": "Email", "e-mail": "Email"}
+MAX_TOUCHES = 5
+
+# Contact details never go on a card or to the model, whichever field they were typed into.
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_PHONE = re.compile(r"(?<![\w,.])\+?\d(?:[\s().-]*\d){9,}(?![\w,.])")  # 10+ digits; amounts use commas
+
+
+def scrub(text: str) -> str:
+    return _PHONE.sub("[phone removed]", _EMAIL.sub("[email removed]", text))
+MAX_NOTE_CHARS = 300  # only excerpts go to the model, never whole notes
 
 
 @dataclass
@@ -47,13 +67,14 @@ def _day(on: datetime | date | None, tz: str) -> date | None:
     return on
 
 
-def _fact(key: str, label: str, value: str, on: datetime | date | None = None, tz: str = "Asia/Kolkata") -> dict:
+def _fact(key: str, label: str, value: str, on: datetime | date | None = None, tz: str = "Asia/Kolkata",
+          source: str = "zoho") -> dict:
     day = _day(on, tz)
     return {
-        "id": f"zoho.{key}",
-        "source": "zoho",
+        "id": f"{source}.{key}",
+        "source": source,
         "label": label,
-        "value": value,
+        "value": scrub(value),
         "date": day.isoformat() if day else None,
     }
 
@@ -68,7 +89,59 @@ def _money(amount: float | None, currency: str | None) -> str | None:
     return f"{currency + ' ' if currency else ''}{amount:,.0f}"
 
 
-def build_card(deal: ZohoDeal, today: date, tz: str = "Asia/Kolkata") -> CardContent:
+def _excerpt(text: str, limit: int = MAX_NOTE_CHARS) -> str:
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "..."
+
+
+def conversation_signal(reachouts: list[Reachout]) -> tuple[dict, list[Gap]]:
+    """The conversation signal from the outreach log, newest first, and the gaps it leaves."""
+    recent = sorted(reachouts, key=lambda r: r.on or date.min, reverse=True)[:MAX_TOUCHES]
+    facts = []
+    for i, r in enumerate(recent, 1):
+        medium = (r.medium or "").strip().lower()
+        what = MEDIUM_PHRASE.get(medium, "Contact logged")
+        who = r.person or "the client"
+        about = ", ".join(x for x in (r.designation, (r.role or "").lower() or None) if x)
+        value = f"{what} with {who}" + (f" ({about})" if about else "")
+        if r.spoc:
+            value += f", led by {r.spoc}"
+        if r.remarks:
+            value += f". Notes: {_excerpt(r.remarks)}"
+        if r.replied_on:
+            value += f". Client replied {r.replied_on.isoformat()}"
+        facts.append(_fact(f"reachout_{i}", "Outreach log", value, r.on))
+
+    media = {(r.medium or "").strip().lower() for r in reachouts}
+    gaps = []
+    if not media & CALL_MEDIA:
+        gaps.append(Gap.NO_CALL_LOGGED)
+    if not media & MAIL_MEDIA:
+        gaps.append(Gap.NO_MAIL)
+    if not facts:
+        return {}, gaps
+    dated = [r.on for r in reachouts if r.on]
+    return {"touches": len(reachouts), "last_touch": max(dated).isoformat() if dated else None, "facts": facts}, gaps
+
+
+def capability_signal(deal: ZohoDeal, case_studies: list[CaseStudy] | None) -> tuple[dict, list[Gap]]:
+    """The closest Setu case studies as citable facts; `None` means Setu was not available."""
+    matches = match_case_studies(deal, case_studies or [])
+    if not matches:
+        return {}, [Gap.NO_SETU_MATCH]
+    facts = []
+    for i, m in enumerate(matches, 1):
+        value = describe(m) + (f" {_excerpt(m.case.content)}" if m.case.content else "")
+        facts.append(_fact(f"case_{i}", "Case study", value, source="setu"))
+    return {
+        "case_studies": [{"name": m.case.name, "industry": m.case.industry, "service_line": m.case.service_line,
+                          "industry_match": m.industry_match, "keyword_hits": list(m.keyword_hits),
+                          "score": m.score} for m in matches],
+        "facts": facts,
+    }, []
+
+
+def build_card(deal: ZohoDeal, today: date, tz: str = "Asia/Kolkata", reachouts: list[Reachout] = (),
+               case_studies: list[CaseStudy] | None = None) -> CardContent:
     days_in_stage = _days_between(deal.stage_entered_at, today, tz)
     days_since_touch = _days_between(deal.modified_at, today, tz)
 
@@ -108,7 +181,9 @@ def build_card(deal: ZohoDeal, today: date, tz: str = "Asia/Kolkata") -> CardCon
         "facts": facts,
     }
 
-    gaps = [Gap.NO_ICP, Gap.NO_CALL_LOGGED, Gap.NO_MAIL, Gap.NO_SETU_MATCH]  # sources wired in Brick 3
+    conversation, conversation_gaps = conversation_signal(list(reachouts))
+    capability, capability_gaps = capability_signal(deal, case_studies)
+    gaps = [Gap.NO_ICP, *conversation_gaps, *capability_gaps]  # ICP scoring arrives later in Brick 3
     stakeholder: dict = {}
     if deal.contact_name:
         stakeholder = {
@@ -118,4 +193,5 @@ def build_card(deal: ZohoDeal, today: date, tz: str = "Asia/Kolkata") -> CardCon
     else:
         gaps.append(Gap.NO_CONTACT)
 
-    return CardContent(stakeholder=stakeholder, deal_state=deal_state, gaps=[g.value for g in gaps])
+    return CardContent(stakeholder=stakeholder, conversation=conversation, capability=capability,
+                       deal_state=deal_state, gaps=[g.value for g in gaps])

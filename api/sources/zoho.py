@@ -13,6 +13,12 @@ the contact, whose shape we have not seen yet: `contact_name` on the deal, or a
 
 Company and contact come only from this record. Nothing here substitutes a
 more senior contact or a different company.
+
+The deal's outreach log (`reachout_tracker`, a related list on the Potential) is read in the
+same connection: date, channel, the person met with their designation and role, remarks, and
+the Practus SPOC. It feeds the `conversation` signal. The mirror has no Contacts module, so the
+card's contact stays empty; the person met appears only as conversation evidence. Their email is
+kept for matching mail to the company later and is never shown or sent to the model.
 """
 from __future__ import annotations
 
@@ -107,10 +113,27 @@ class ZohoDeal:
     raw: dict = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class Reachout:
+    """One row of a deal's outreach log."""
+    deal_zoho_id: str
+    on: date | None = None
+    medium: str | None = None  # Teams, In-Person, Phone, Email, Others
+    person: str | None = None
+    designation: str | None = None
+    role: str | None = None  # Customer, Influencer, Others
+    remarks: str | None = None
+    replied_on: date | None = None
+    spoc: str | None = None  # the Practus person who made the contact
+    email: str | None = None  # for matching only: never shown, never sent to the model
+
+
 @dataclass
 class ZohoResult:
     deals: list[ZohoDeal] = field(default_factory=list)
     error: str | None = None
+    reachouts: dict[str, list[Reachout]] = field(default_factory=dict)  # by deal zoho_id, newest first
+    reachout_error: str | None = None  # the outreach log failed; deals are still good
 
     @property
     def ok(self) -> bool:
@@ -231,7 +254,7 @@ def row_to_deal(row: dict) -> ZohoDeal:
 _COLUMNS_SQL = """
     SELECT table_name, column_name
       FROM information_schema.columns
-     WHERE table_schema = 'public' AND table_name IN ('deals', 'users', 'accounts', 'contacts')
+     WHERE table_schema = 'public' AND table_name IN ('deals', 'users', 'accounts', 'contacts', 'reachout_tracker')
 """
 
 
@@ -270,6 +293,49 @@ def build_deals_query(columns: dict[str, set[str]]) -> str:
     )
 
 
+_REACHOUT_COLUMNS = {
+    "on": "reachout_date", "medium": "reachout_medium", "person": "client_contact_name",
+    "designation": "designation", "role": "contact_role", "remarks": "remarks",
+    "replied_on": "first_reply_date", "email": "email",
+}
+
+
+def build_reachout_query(columns: dict[str, set[str]]) -> str | None:
+    """SELECT for the outreach log of the given deals, using only the columns that exist."""
+    have = columns.get("reachout_tracker", set())
+    if not {"deal_id"} <= have:
+        return None
+    select = ["r.deal_id"] + [f"r.{col} AS {key}" for key, col in _REACHOUT_COLUMNS.items() if col in have]
+    joins = ""
+    if "practus_spoc_id" in have and {"id", "full_name"} <= columns.get("users", set()):
+        select.append("u.full_name AS spoc")
+        joins = "  LEFT JOIN public.users u ON u.id = r.practus_spoc_id\n"
+    order = "r.reachout_date DESC NULLS LAST" if "reachout_date" in have else "r.deal_id"
+    return (f"SELECT {', '.join(select)}\n  FROM public.reachout_tracker r\n{joins}"
+            f" WHERE r.deal_id = ANY(%(ids)s)\n ORDER BY {order}")
+
+
+def row_to_reachout(row: dict) -> Reachout:
+    email = clean_text(row.get("email"))
+    return Reachout(
+        deal_zoho_id=str(row["deal_id"]),
+        on=_as_date(row.get("on")),
+        medium=clean_text(row.get("medium")),
+        person=clean_text(row.get("person")),
+        designation=clean_text(row.get("designation")),
+        role=clean_text(row.get("role")),
+        remarks=clean_text(row.get("remarks")),
+        replied_on=_as_date(row.get("replied_on")),
+        spoc=clean_text(row.get("spoc")),
+        email=email.lower() if email and "@" in email else None,
+    )
+
+
+def _as_date(value: Any) -> date | None:
+    moment = clean_datetime(value)
+    return moment.date() if moment else None
+
+
 def in_scope_stage_keys() -> list[str]:
     return sorted({" ".join(s.split()).lower() for s in IN_SCOPE_STAGES})
 
@@ -297,6 +363,7 @@ def fetch_deals(settings: Settings, connect_fn: Connect = connect) -> ZohoResult
                 return ZohoResult(error="The Zoho copy has no public.deals table visible to this login.")
             cur.execute(build_deals_query(columns), {"stages": in_scope_stage_keys()})
             rows = cur.fetchall()
+            reachout_rows, reachout_error = _read_reachouts(cur, columns, rows)
     except Exception as exc:  # one failing source never fails the whole run
         # The message is shown on the open API, so it names the kind of failure only; the
         # exception text (which can carry the host and login name) stays in the server log.
@@ -309,4 +376,28 @@ def fetch_deals(settings: Settings, connect_fn: Connect = connect) -> ZohoResult
             deals.append(row_to_deal(dict(row)))
         except Exception:
             logger.exception("Skipping a Zoho row that could not be read: id=%s", row.get("id"))
-    return ZohoResult(deals=deals)
+    reachouts: dict[str, list[Reachout]] = {}
+    for row in reachout_rows:
+        try:
+            r = row_to_reachout(dict(row))
+        except Exception:
+            logger.exception("Skipping an outreach row that could not be read")
+            continue
+        reachouts.setdefault(r.deal_zoho_id, []).append(r)
+    return ZohoResult(deals=deals, reachouts=reachouts, reachout_error=reachout_error)
+
+
+def _read_reachouts(cur: Any, columns: dict[str, set[str]], deal_rows: list) -> tuple[list, str | None]:
+    """The outreach log for these deals. A failure here is reported, never raised: deals still count."""
+    query = build_reachout_query(columns)
+    if query is None:
+        return [], "The Zoho copy has no reachout_tracker table visible to this login."
+    ids = [row["id"] for row in deal_rows if row.get("id") is not None]
+    if not ids:
+        return [], None
+    try:
+        cur.execute(query, {"ids": ids})
+        return cur.fetchall(), None
+    except Exception as exc:
+        logger.exception("Zoho outreach log read failed")
+        return [], f"Zoho outreach log read failed ({type(exc).__name__}). Details are in the server log."

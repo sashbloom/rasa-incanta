@@ -99,4 +99,5 @@ curl --path-as-is "$S/%2e%2e%2f%2e%2e%2f%2e%2e%2fetc/passwd"          # must not
 |---|---|
 | 1. Skeleton | Done: settings, schema, health check, Docker, Railway |
 | 2. Thin slice | Built: Zoho Postgres source, deal upsert, weekly snapshots, minimal context cards, one evidence-checked NBA from Claude. Waiting on `ZOHO_PG_*` and `ANTHROPIC_API_KEY` for the first real run |
+| 3. All signals (in progress) | Done: conversation from the Zoho outreach log (all deals), Setu case studies as capability (42 of 83 real deals). Waiting: Outlook (credentials), Read.ai, ICP scoring |
 | Report standard | Done: `api/` + `frontend/` layout, one process at `/` and `/reports/rasa-incanta/`, React board (My week, deal detail), 100 tests. Board open, no sign-in; identity code and user schema kept, unwired |

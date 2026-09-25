@@ -32,7 +32,7 @@ def test_recorded_row_maps_to_a_typed_deal():
     assert deal.zoho_id == "598723000011234001"
     assert deal.name == "Northwind Foods - Working capital"
     assert deal.account_name == "Northwind Foods Pvt Ltd"
-    assert deal.contact_name == "Priya Shah"
+    assert deal.contact_name is None  # the real mirror has no Contacts module
     assert deal.owner_name == "Rao"
     assert deal.ep_involved == ["A. Mehta"]
     assert deal.el_involved == ["R. Iyer"]
@@ -60,8 +60,11 @@ def test_query_joins_only_what_the_copy_has():
     sql = build_deals_query(columns)
     assert "LEFT JOIN public.users u ON u.id = d.owner_id" in sql
     assert "LEFT JOIN public.accounts a ON a.id = d.account_id" in sql
-    assert "concat_ws(' ', c.first_name, c.last_name) AS _rel_contact_name" in sql
+    assert "contacts" not in sql  # no Contacts table in the real mirror, so no contact join
     assert "is_deleted" not in sql
+
+    with_contacts = {**columns, "contacts": {"id", "first_name", "last_name"}}
+    assert "concat_ws(' ', c.first_name, c.last_name) AS _rel_contact_name" in build_deals_query(with_contacts)
 
     bare = build_deals_query({"deals": {"id", "stage", "deal_name", "contact_name", "is_deleted"}})
     assert "JOIN" not in bare

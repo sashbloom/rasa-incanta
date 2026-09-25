@@ -43,11 +43,11 @@ def test_deal_detail_is_open_and_has_the_bar_and_the_action(client):
     boards = client.get("/api/week").json()["boards"]
     northwind = next(d for st in boards[0]["stages"] for d in st["deals"] if d["name"].startswith("Northwind"))
     detail = client.get(f"{PREFIX}/api/deals/{northwind['id']}").json()
-    assert detail["contact_name"] == "Priya Shah" and detail["days_in_stage"] is not None
+    assert detail["contact_name"] is None and detail["days_in_stage"] is not None  # no Contacts in the mirror
     segments = {s["key"]: s for s in detail["segments"]}
-    assert segments["deal_state"]["present"] and segments["contact"]["present"]
-    assert not segments["conversation"]["present"]
-    assert segments["conversation"]["reason"] == "No call logged. No mail found."
+    assert segments["deal_state"]["present"] and not segments["contact"]["present"]
+    assert segments["conversation"]["present"] and segments["conversation"]["source"] == "Zoho"
+    assert segments["conversation"]["date"] == "2026-09-09"  # the latest outreach entry
     action = detail["actions"][0]
     assert action["objective"] == "advance" and action["evidence"][0]["source_label"] == "Zoho"
 

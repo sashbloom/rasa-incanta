@@ -34,18 +34,28 @@ class FakeCursor:
 
     def execute(self, sql, params=None):
         self.conn.executed.append((sql, params))
-        self._rows = self.conn.columns if "information_schema" in sql else self.conn.deals
+        if "information_schema" in sql:
+            self._rows = self.conn.columns
+        elif "reachout_tracker" in sql:
+            if self.conn.reachout_error:
+                raise self.conn.reachout_error
+            ids = set((params or {}).get("ids", []))
+            self._rows = [r for r in self.conn.reachouts if r["deal_id"] in ids]
+        else:
+            self._rows = self.conn.deals
 
     def fetchall(self):
         return list(self._rows)
 
 
 class FakeConnection:
-    """Answers the column listing and the deals query with recorded rows."""
+    """Answers the column listing, the deals query and the outreach-log query with recorded rows."""
 
-    def __init__(self, columns=None, deals=None):
+    def __init__(self, columns=None, deals=None, reachouts=None, reachout_error=None):
         self.columns = load("zoho/columns.json") if columns is None else columns
         self.deals = load("zoho/deals.json") if deals is None else deals
+        self.reachouts = load("zoho/reachouts.json") if reachouts is None else reachouts
+        self.reachout_error = reachout_error  # an exception to raise on the outreach-log query
         self.executed = []
         self.read_only = True
 

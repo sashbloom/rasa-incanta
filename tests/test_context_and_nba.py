@@ -14,7 +14,10 @@ TODAY = date(2026, 9, 24)
 
 
 def northwind_card():
-    return build_card(row_to_deal(load("zoho/deals.json")[0]), TODAY)
+    from api.sources.zoho import row_to_reachout
+
+    reachouts = [row_to_reachout(r) for r in load("zoho/reachouts.json") if r["deal_id"] == 598723000011234001]
+    return build_card(row_to_deal(load("zoho/deals.json")[0]), TODAY, reachouts=reachouts)
 
 
 def test_week_starts_on_monday_in_kolkata():
@@ -24,12 +27,13 @@ def test_week_starts_on_monday_in_kolkata():
 def test_card_carries_sourced_facts_and_brick_three_gaps():
     card = northwind_card()
     ids = {f["id"] for f in card.facts()}
-    assert {"zoho.stage", "zoho.contact", "zoho.account", "zoho.proposal_sent", "zoho.problem_statement_1"} <= ids
+    assert {"zoho.stage", "zoho.reachout_1", "zoho.account", "zoho.proposal_sent", "zoho.problem_statement_1"} <= ids
+    assert "zoho.contact" not in ids
     assert all(f["source"] == "zoho" for f in card.facts())
     assert card.deal_state["days_in_stage"] == 34
     assert card.deal_state["board"] == "pipeline"
     assert card.deal_state["last_touch"] == "2026-09-09"
-    assert set(card.gaps) == {"no_icp", "no_call_logged", "no_mail", "no_setu_match"}
+    assert set(card.gaps) == {"no_icp", "no_contact", "no_mail", "no_setu_match"}  # the Teams meeting clears no_call_logged
 
 
 def test_card_days_are_kolkata_days_not_utc_days():
@@ -61,7 +65,7 @@ def test_generates_an_nba_from_the_recorded_reply():
     assert result.ok
     assert result.draft.objective == "advance"
     assert [e["fact_id"] for e in result.evidence] == [
-        "zoho.stage", "zoho.proposal_sent", "zoho.problem_statement_1", "zoho.contact",
+        "zoho.stage", "zoho.proposal_sent", "zoho.problem_statement_1", "zoho.reachout_1",
     ]
     assert result.evidence[0]["date"] == "2026-08-21"
 
@@ -69,7 +73,8 @@ def test_generates_an_nba_from_the_recorded_reply():
     assert request["model"] == "claude-sonnet-5"
     assert request["thinking"] == {"type": "adaptive"}
     sent = request["messages"][0]["content"]
-    assert "Priya Shah" in sent and "No call logged." in sent
+    assert "Teams meeting with Priya Shah" in sent and "No mail found." in sent and "No call logged." not in sent
+    assert "@" not in sent  # the contact's email never goes to the model
     assert "raw" not in sent  # only card facts go to the model, never the raw record
 
 

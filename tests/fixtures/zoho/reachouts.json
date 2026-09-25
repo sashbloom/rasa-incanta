@@ -1,0 +1,38 @@
+[
+  {
+    "deal_id": 598723000011234001,
+    "on": "2026-09-09",
+    "medium": "Teams",
+    "person": "Priya Shah",
+    "designation": "Chief Financial Officer",
+    "role": "Customer",
+    "remarks": "Asked for a phased approach; board review of working capital in October.",
+    "replied_on": null,
+    "email": "priya.shah@northwindfoods.example",
+    "spoc": "Rao"
+  },
+  {
+    "deal_id": 598723000011234001,
+    "on": "2026-07-14",
+    "medium": "Others",
+    "person": "Priya Shah",
+    "designation": "Chief Financial Officer",
+    "role": "Customer",
+    "remarks": null,
+    "replied_on": null,
+    "email": "priya.shah@northwindfoods.example",
+    "spoc": "Rao"
+  },
+  {
+    "deal_id": 598723000011234002,
+    "on": "2026-07-01",
+    "medium": "Others",
+    "person": "Arjun Menon",
+    "designation": "Head of Procurement",
+    "role": "Influencer",
+    "remarks": "  ",
+    "replied_on": null,
+    "email": "arjun@blueharbour.example",
+    "spoc": "Nair"
+  }
+]

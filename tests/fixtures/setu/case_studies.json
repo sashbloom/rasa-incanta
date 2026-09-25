@@ -1,0 +1,11 @@
+[
+  {"entity_name": "Patisserie & Bakes", "industry": "Food Processing", "service_line": "Strategic Finance Transformation",
+   "service_offered": "Virtual CFO", "content": "Problem: rapid multi-city expansion with weak financial governance. Service: virtual CFO and working capital controls. Impact: receivable days down 22."},
+  {"entity_name": "Steel Major", "industry": "Steel Manufacturing", "service_line": "Cost Optimisation", "service_offered": "Cost audit",
+   "content": "Problem: rising conversion cost at an Indian integrated steel plant. Impact: 6% cost reduction."},
+  {"entity_name": "F-Mart Mobiles", "industry": "Retail", "service_line": "Cost Optimisation", "service_offered": "Cost audit",
+   "content": "Problem: store-level cost leakage across 120 outlets. Impact: INR 4 Cr annual savings."},
+  {"entity_name": "Northwind Foods Treasury", "industry": "nan", "service_line": "nan", "service_offered": null,
+   "content": "Problem: treasury set-up for Northwind Foods ahead of a bank refinancing."},
+  {"entity_name": "  ", "industry": "Retail", "service_line": null, "service_offered": null, "content": "untitled chunk"}
+]

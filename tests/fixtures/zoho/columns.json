@@ -96,15 +96,55 @@
     "column_name": "account_name"
   },
   {
-    "table_name": "contacts",
+    "table_name": "reachout_tracker",
     "column_name": "id"
   },
   {
-    "table_name": "contacts",
-    "column_name": "first_name"
+    "table_name": "reachout_tracker",
+    "column_name": "deal_id"
   },
   {
-    "table_name": "contacts",
-    "column_name": "last_name"
+    "table_name": "reachout_tracker",
+    "column_name": "reachout_date"
+  },
+  {
+    "table_name": "reachout_tracker",
+    "column_name": "reachout_medium"
+  },
+  {
+    "table_name": "reachout_tracker",
+    "column_name": "client_contact_name"
+  },
+  {
+    "table_name": "reachout_tracker",
+    "column_name": "designation"
+  },
+  {
+    "table_name": "reachout_tracker",
+    "column_name": "contact_role"
+  },
+  {
+    "table_name": "reachout_tracker",
+    "column_name": "remarks"
+  },
+  {
+    "table_name": "reachout_tracker",
+    "column_name": "first_reply_date"
+  },
+  {
+    "table_name": "reachout_tracker",
+    "column_name": "email"
+  },
+  {
+    "table_name": "reachout_tracker",
+    "column_name": "phone"
+  },
+  {
+    "table_name": "reachout_tracker",
+    "column_name": "message_content"
+  },
+  {
+    "table_name": "reachout_tracker",
+    "column_name": "practus_spoc_id"
   }
 ]

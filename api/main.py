@@ -24,6 +24,7 @@ from api.domain.weeks import week_start
 from api.engine.run import run_week
 from api.models import Run
 from api.prefix import MountUnderPrefix
+from api.sources.setu import fetch_case_studies
 from api.sources.zoho import fetch_deals
 from api.views import deal_view, deals_view, run_payload, week_view
 
@@ -96,7 +97,8 @@ _run_lock = threading.Lock()
 
 def run_sources() -> dict:
     """What a run reads from and drafts with. Tests override this dependency with fakes."""
-    return {"fetch": fetch_deals, "llm_client": None}  # None = the real Claude client from settings
+    return {"fetch": fetch_deals, "fetch_setu": fetch_case_studies,
+            "llm_client": None}  # None = the real Claude client from settings
 
 
 def mark_interrupted_runs() -> None:
@@ -115,6 +117,7 @@ def execute_run(run_id: uuid.UUID, sources: dict) -> None:
         with get_sessionmaker()() as session:
             try:
                 run_week(session, get_settings(), fetch=sources["fetch"], llm_client=sources["llm_client"],
+                         fetch_setu=sources.get("fetch_setu", fetch_case_studies),
                          nba_limit=None, run=session.get(Run, run_id))
             except Exception as exc:
                 logger.exception("Run %s crashed", run_id)  # the detail stays in the server log

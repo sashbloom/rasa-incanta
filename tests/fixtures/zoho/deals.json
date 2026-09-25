@@ -21,8 +21,7 @@
     "services": "Working capital review",
     "client_problem_statement": "Receivable days rose from 62 to 81 in two quarters",
     "_rel_owner_name": "Rao",
-    "_rel_account_name": "Northwind Foods Pvt Ltd",
-    "_rel_contact_name": "Priya Shah"
+    "_rel_account_name": "Northwind Foods Pvt Ltd"
   },
   {
     "id": 598723000011234002,
@@ -46,7 +45,6 @@
     "services": null,
     "client_problem_statement": "  ",
     "_rel_owner_name": "Nair",
-    "_rel_account_name": "Blue Harbour Retail",
-    "_rel_contact_name": ""
+    "_rel_account_name": "Blue Harbour Retail"
   }
 ]

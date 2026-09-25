@@ -83,12 +83,23 @@ account-fit and stakeholder logic is copied into this codebase, not called over 
 - **ICP bot repo:** a read-only reference clone at `icp-bot/` (gitignored, excluded from pytest and
   Docker). Read it, never edit or commit it. `icp-bot/Database_Guide.md` holds a plaintext login:
   never copy it into this repo, tests, docs or memory.
-- **Setu:** read-only Postgres mirror `wisible_data` (case studies, team roster). Database only.
-- **Outlook:** Microsoft Graph with an app registration (tenant, client ID, client secret) and
-  Mail.Read limited to Myrah's mailbox. No refresh token to store.
-- **Read.ai:** our own OAuth client for a weekly import (no webhook of our own). Refresh tokens can
-  rotate, so store tokens in our Postgres (an `oauth_tokens` table), never only in env vars. The ICP
-  bot's `readai_oauth_setup.py` and `readai_backfill_cli.py` are a useful reference.
+- **Setu:** read-only Postgres mirror `wisible_data`, database only (its chat API is unreliable; the
+  ICP bot retired it). Case studies are `knowledge_chunks` rows with `source_type='case_study'`
+  (title `entity_name`, prose `content`, `metadata` industry/service_line; no stable id). SMEs:
+  `employees`, plus `knowledge_chunks` types `skill_profile`, `resume`, `partner_profile`.
+  `sources/setu.py` reads case studies; `engine/capability.py` scores them with the ICP bot's P2
+  logic and keeps a match only for the same industry or rare shared terms (keyword score >= 0.5).
+- **Conversation from Zoho:** `reachout_tracker` (the deal's outreach log) gives every in-scope
+  deal a dated touch with the person met, designation, role and remarks, read in `sources/zoho.py`.
+  Teams / in-person / phone clear `no_call_logged`. Emails and phone numbers are scrubbed from
+  every fact (`engine/context.scrub`).
+- **Outlook:** Microsoft Graph. Planned as app-only (client credentials) with Mail.Read limited to
+  Myrah's mailbox, but the ICP bot found the tenant refuses Application Mail.Read and uses a
+  delegated refresh token instead: check the token's `roles` claim before building on app-only.
+- **Read.ai:** either our own OAuth client for a weekly import (tokens rotate: store them in an
+  `oauth_tokens` table, never only in env vars), or a signed webhook (`meeting_end`, HMAC-SHA256 of
+  the raw body with a base64 signing key, fail closed; ICP bot `readai_webhook.py`), which only
+  captures meetings from the day it goes live.
 - **ICP logic:** copied from the ICP bot's code (`icp-bot/backend/domains/mahak/people/mahak/icp/`,
   e.g. `scorer.py`, `gates.py`, `criteria_tables.py`, `persona.py`) into our own module, run on our own data. No call to the ICP bot,
   no `ICP_BOT_*` settings. Cache a company's result for 4 weeks.
