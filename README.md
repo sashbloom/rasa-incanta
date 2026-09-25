@@ -51,8 +51,9 @@ Run the tests with `python -m pytest -q` from the repo root, and `npx tsc --noEm
 
 ### Run the week
 
-With `ZOHO_PG_*` and `ANTHROPIC_API_KEY` set in `.env`. Every route also answers under
-`/reports/rasa-incanta`.
+With `ZOHO_PG_*` and `ANTHROPIC_API_KEY` set in `.env`, press **Run now** at the top of My week: it
+shows a progress bar while the run drafts actions and reloads the deals when it finishes. The
+same calls, which also answer under `/reports/rasa-incanta`:
 
 | Call | What it does |
 |---|---|

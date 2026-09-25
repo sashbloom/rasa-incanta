@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
@@ -35,12 +36,13 @@ def visible_deals() -> Select:
     return select(Deal).where(Deal.is_active.is_(True), Deal.board.is_not(None))
 
 
-def _run_notice(session: Session) -> str | None:
+def _run_notice(session: Session, tz: str) -> str | None:
     latest = session.scalar(select(Run).order_by(Run.started_at.desc()).limit(1))
-    if latest is None or latest.status != "failed":
-        return None
-    at = latest.started_at.strftime("%H:%M") if latest.started_at else "the last run"
-    return f"Zoho didn't respond at {at}. Showing the latest deals we have."
+    zoho = ((latest.stats or {}).get("sources") or {}).get("zoho") if latest else None
+    if latest is None or latest.status != "failed" or zoho in (None, "ok"):
+        return None  # only a failed Zoho pull earns this notice; crashes and restarts say so on the run
+    started = latest.started_at.replace(tzinfo=latest.started_at.tzinfo or timezone.utc)
+    return f"Zoho didn't respond at {started.astimezone(ZoneInfo(tz)):%H:%M}. Showing the latest deals we have."
 
 
 def week_view(session: Session, settings: Settings, now: datetime | None = None) -> dict:
@@ -65,7 +67,7 @@ def week_view(session: Session, settings: Settings, now: datetime | None = None)
             "id": board.value, "label": BOARD_LABEL[board], "count": len(on_board),
             "stages": [{"stage": s, "count": len(ds), "deals": ds} for s, ds in stages.items()],
         })
-    return {"week_start": week.isoformat(), "notice": _run_notice(session), "boards": boards}
+    return {"week_start": week.isoformat(), "notice": _run_notice(session, settings.timezone), "boards": boards}
 
 
 def _segments(card: ContextCard | None) -> list[dict]:

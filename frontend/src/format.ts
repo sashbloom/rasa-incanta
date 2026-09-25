@@ -22,3 +22,15 @@ export const OBJECTIVE_LABEL: Record<string, string> = {
   nurture: 'Nurture',
   re_engage: 'Re-engage',
 }
+
+const IST = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Asia/Kolkata', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+})
+
+/** An instant, in Kolkata time whatever the viewer's zone: "24 Sep, 07:00". Business times are IST.
+ *  Built from parts so the month reads like shortDate ("Sep", not the locale's "Sept"). */
+export function timeIST(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const part = Object.fromEntries(IST.formatToParts(new Date(iso)).map((p) => [p.type, p.value]))
+  return `${Number(part.day)} ${MONTHS[Number(part.month) - 1]}, ${part.hour}:${part.minute}`
+}

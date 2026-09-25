@@ -14,6 +14,23 @@ export type BoardView = {
   stages: { stage: string; count: number; deals: DealRow[] }[]
 }
 
+export type RunView = {
+  id: string
+  week_start: string
+  status: 'running' | 'succeeded' | 'partial' | 'failed'
+  started_at: string | null
+  finished_at: string | null
+  error: string | null
+  stats: {
+    deals?: number
+    nba_to_draft?: number
+    nba_done?: number
+    nba_created?: number
+    nba_kept?: number
+    nba_skipped?: { deal: string; reason: string }[]
+  }
+}
+
 export type WeekView = { week_start: string; notice: string | null; boards: BoardView[] }
 
 export type Segment = {

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { apiFetch } from '../api'
 import { DealDetail } from '../components/DealDetail'
+import { RunNowButton, RunStatus, useRun } from '../components/RunNow'
 import { longDate } from '../format'
 import type { BoardView, WeekView } from '../types'
 
@@ -14,10 +15,12 @@ export function MyWeek() {
   const navigate = useNavigate()
   const [week, setWeek] = useState<WeekView | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [reloadKey, setReloadKey] = useState(0) // bumped when a run finishes: reload deals and detail
+  const runner = useRun(() => setReloadKey((k) => k + 1))
 
   useEffect(() => {
     apiFetch<WeekView>('/api/week').then(setWeek).catch((e: Error) => setError(e.message))
-  }, [])
+  }, [reloadKey])
 
   const boardParam = params.get('board') as BoardView['id'] | null
   const boardId = boardParam && BOARDS.includes(boardParam) ? boardParam : 'pipeline'
@@ -47,8 +50,14 @@ export function MyWeek() {
       <section aria-label="Deals"
         className={`w-full shrink-0 border-line md:w-[360px] md:border-r ${dealId ? 'hidden md:block' : ''}`}>
         <div className="px-4 pt-6 pb-3 md:px-6 md:pt-10">
-          <h1 className="t-page m-0">My week</h1>
-          {week && <p className="t-meta m-0">Week of {longDate(week.week_start)}</p>}
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h1 className="t-page m-0">My week</h1>
+              {week && <p className="t-meta m-0">Week of {longDate(week.week_start)}</p>}
+            </div>
+            <RunNowButton running={runner.running} starting={runner.starting} onClick={runner.start} />
+          </div>
+          <RunStatus run={runner.run} running={runner.running} problem={runner.problem} />
         </div>
         {week?.notice && <p className="mx-4 my-2 md:mx-6">{week.notice}</p>}
         <nav aria-label="Boards" className="flex gap-5 border-b border-line px-4 md:px-6">
@@ -97,7 +106,7 @@ export function MyWeek() {
       <section aria-label="Deal detail" className={`min-w-0 flex-1 px-4 py-6 md:px-12 md:py-10 ${dealId ? '' : 'hidden md:block'}`}>
         <div className="max-w-[760px]">
           {dealId ? (
-            <DealDetail dealId={dealId} backTo={`/${query}`} />
+            <DealDetail dealId={dealId} backTo={`/${query}`} reloadKey={reloadKey} />
           ) : (
             <p className="t-meta mt-16">Choose a deal to see this week's actions. Use j and k to move between deals.</p>
           )}

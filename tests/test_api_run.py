@@ -148,3 +148,26 @@ def test_deals_includes_deals_that_left_the_pipeline(client, sources):
     client.post("/api/run")
     blue = next(d for d in client.get("/api/deals").json() if d["name"].startswith("Blue Harbour"))
     assert blue["is_active"] is False and blue["actions"]  # still listed, with its last NBA
+
+
+def test_progress_counts_every_deal_including_skips(client, sources):
+    sources["llm_client"] = None  # every deal is skipped: progress must still reach the total
+    client.post("/api/run")
+    stats = client.get("/api/run").json()["stats"]
+    assert stats["nba_done"] == stats["nba_to_draft"] == 2 and stats["nba_created"] == 0
+
+
+def test_zoho_notice_is_in_kolkata_time_and_only_for_zoho_failures(client):
+    from datetime import datetime, timezone
+
+    with get_sessionmaker()() as s:
+        at = datetime(2026, 9, 24, 1, 30, tzinfo=timezone.utc)  # 07:00 in Kolkata
+        s.add(Run(week_start=at.date(), status="failed", started_at=at, error="x",
+                  stats={"sources": {"zoho": "Zoho Postgres read failed (OSError)."}}))
+        s.commit()
+    assert client.get("/api/week").json()["notice"] == "Zoho didn't respond at 07:00. Showing the latest deals we have."
+
+    with get_sessionmaker()() as s:
+        s.add(Run(week_start=NOW.date(), status="failed", started_at=NOW, error="Interrupted by a restart.", stats={}))
+        s.commit()
+    assert client.get("/api/week").json()["notice"] is None

@@ -49,7 +49,7 @@ function ActionItem({ action }: { action: Action }) {
   )
 }
 
-export function DealDetail({ dealId, backTo }: { dealId: string; backTo: string }) {
+export function DealDetail({ dealId, backTo, reloadKey = 0 }: { dealId: string; backTo: string; reloadKey?: number }) {
   const [deal, setDeal] = useState<Detail | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -63,7 +63,7 @@ export function DealDetail({ dealId, backTo }: { dealId: string; backTo: string 
     return () => {
       live = false
     }
-  }, [dealId])
+  }, [dealId, reloadKey])
 
   if (error) return <p className="mt-8">{error === 'Deal not found.' ? 'This deal is not on your boards.' : error}</p>
   if (!deal) return <p className="t-meta mt-8">Loading the deal.</p>

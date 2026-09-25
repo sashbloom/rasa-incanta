@@ -141,22 +141,24 @@ def run_week(
     else:
         chosen = pick_deals(zoho.deals, cards, nba_limit)
     stats["nba_to_draft"] = len(chosen)
+    stats["nba_done"] = 0  # deals handled so far, whatever the outcome; drives the progress bar
     run.stats = copy.deepcopy(stats)  # a snapshot: sharing lists with stats would hide later changes
     session.commit()  # the cards and snapshots are saved before the slow part starts
 
     client = llm_client if llm_client is not None else default_llm_client(settings)
-    for z in chosen:
+
+    def draft_for(z: ZohoDeal) -> None:
         deal = deals[z.zoho_id]
         if decided_this_week(session, deal, week):
             stats["nba_kept"] += 1
-            continue
+            return
         if client is None:
             stats["nba_skipped"].append({"deal": z.name, "reason": "ANTHROPIC_API_KEY is not set."})
-            continue
+            return
         result = generate_nba(client, settings.llm_model_actions, z.name, cards[z.zoho_id])
         if not result.ok:
             stats["nba_skipped"].append({"deal": z.name, "reason": result.error, "problems": result.problems})
-            continue
+            return
         draft = result.draft
         session.add(Recommendation(
             run_id=run.id, deal_id=deal.id, rank=1, objective=draft.objective, action=draft.action.strip(),
@@ -164,8 +166,12 @@ def run_week(
             gaps=cards[z.zoho_id].gaps, model=result.model,
         ))
         stats["nba_created"] += 1
+
+    for z in chosen:
+        draft_for(z)
+        stats["nba_done"] += 1
         run.stats = copy.deepcopy(stats)
-        session.commit()  # progress is visible while the run is still going
+        session.commit()  # progress is visible while the run is still going, skips included
 
     run.status = "partial" if stats["nba_skipped"] else "succeeded"
     run.stats = copy.deepcopy(stats)
