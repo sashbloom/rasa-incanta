@@ -97,9 +97,12 @@ account-fit and stakeholder logic is copied into this codebase, not called over 
   every fact (`engine/context.scrub`).
 - **Outlook:** Microsoft Graph, DELEGATED (Practus policy allows no app-level Mail.Read).
   `sources/outlook.py`: Myrah signs in once from the Sources page (authorization code, confidential
-  client, paste-back redirect `MS_REDIRECT_URI`, default `http://localhost/callback`, which must be
-  registered on the app). Only a sign-in as MYRAH_MAILBOX is stored; the rotating refresh token
-  lives in `oauth_tokens`. Mail is searched per deal on the company name and each contact domain;
+  client). Microsoft redirects to `GET /api/outlook/callback` (works at `/` and under the prefix),
+  which checks the one-time state, exchanges the code with the same redirect URI and returns the
+  browser to the Sources page with a fixed status word. The redirect URI is MS_REDIRECT_URI, or when
+  unset `<origin>/reports/rasa-incanta/api/outlook/callback` from the forwarded host and scheme;
+  whichever it is must be registered in Azure. Only a sign-in as MYRAH_MAILBOX is stored; the
+  rotating refresh token lives in `oauth_tokens`. Mail is searched per deal on the company name and each contact domain;
   `engine/linking.py` keeps only mail that really concerns the deal; `engine/mail.py` extracts key
   points from previews with LLM_MODEL_EXTRACTION.
 - **Read.ai:** the signed workspace webhook, `POST /api/webhooks/readai` (`sources/readai.py`).

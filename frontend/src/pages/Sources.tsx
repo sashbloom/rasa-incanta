@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useState } from 'react'
 import { apiFetch, ApiError } from '../api'
 import { timeIST } from '../format'
 import type { SourcesView } from '../types'
@@ -32,38 +32,37 @@ function Row({ name, status }: { name: string; status: string | undefined }) {
   )
 }
 
-function OutlookConnect({ view, onConnected }: { view: SourcesView['outlook']; onConnected: () => void }) {
-  const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null)
-  const [pasted, setPasted] = useState('')
+// Where Microsoft's redirect lands us: GET /api/outlook/callback sends back one fixed word.
+const OUTLOOK_OUTCOME: Record<string, string> = {
+  connected: 'Outlook connected.',
+  denied: 'The sign-in was cancelled or declined at Microsoft. Nothing was saved.',
+  expired: 'That sign-in link had expired or was already used. Connect again.',
+  wrong_account: 'Someone other than the configured mailbox signed in. Nothing was saved.',
+  failed: 'Microsoft did not accept the sign-in. Check MS_CLIENT_SECRET (the secret value, not its ID) and the redirect URI in Azure, then connect again.',
+}
+
+function OutlookConnect({ view }: { view: SourcesView['outlook'] }) {
   const [message, setMessage] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  async function start() {
-    setMessage(null)
-    try {
-      const { authorize_url } = await apiFetch<{ authorize_url: string }>('/api/outlook/connect/start', { method: 'POST' })
-      setAuthorizeUrl(authorize_url)
-      window.open(authorize_url, '_blank', 'noopener')
-    } catch (e) {
-      setMessage(e instanceof ApiError ? e.message : 'Could not reach the server.')
+  useEffect(() => {
+    const outcome = new URLSearchParams(window.location.search).get('outlook')
+    if (outcome && OUTLOOK_OUTCOME[outcome]) {
+      setMessage(OUTLOOK_OUTCOME[outcome])
+      const url = new URL(window.location.href)
+      url.searchParams.delete('outlook')
+      window.history.replaceState(null, '', url)  // a reload should not repeat the message
     }
-  }
+  }, [])
 
-  async function finish(event: FormEvent) {
-    event.preventDefault()
+  async function start() {
     setBusy(true)
     setMessage(null)
     try {
-      const done = await apiFetch<{ account: string }>('/api/outlook/connect/finish', {
-        method: 'POST', body: JSON.stringify({ redirect_url: pasted }),
-      })
-      setMessage(`Connected to ${done.account}.`)
-      setAuthorizeUrl(null)
-      setPasted('')
-      onConnected()
+      const { authorize_url } = await apiFetch<{ authorize_url: string }>('/api/outlook/connect/start', { method: 'POST' })
+      window.location.assign(authorize_url)  // Microsoft brings the browser back here when done
     } catch (e) {
       setMessage(e instanceof ApiError ? e.message : 'Could not reach the server.')
-    } finally {
       setBusy(false)
     }
   }
@@ -76,29 +75,13 @@ function OutlookConnect({ view, onConnected }: { view: SourcesView['outlook']; o
       <p className="m-0">
         {view.connected ? `Connected to ${view.account}.` : `Not connected. ${view.mailbox} needs to sign in once.`}
       </p>
-      {!authorizeUrl ? (
-        <button type="button" onClick={start}
-          className="t-label mt-3 cursor-pointer rounded-md border-0 bg-gold-web px-4 py-2 text-navy">
-          {view.connected ? 'Reconnect Outlook' : 'Connect Outlook'}
-        </button>
-      ) : (
-        <form onSubmit={finish} className="mt-3">
-          <p className="m-0">
-            Sign in as {view.mailbox} in the tab that opened (<a href={authorizeUrl} target="_blank" rel="noopener">open it again</a>).
-            Microsoft then sends you to a page that does not load. Copy that page's full address and paste it here.
-          </p>
-          <label className="t-label mt-3 block">
-            Address after sign-in
-            <input value={pasted} onChange={(e) => setPasted(e.target.value)} required placeholder="http://localhost/callback?code=..."
-              className="mt-1 block w-full rounded-md border border-line bg-white px-3 py-2 text-[15px] text-navy" />
-          </label>
-          <button type="submit" disabled={busy}
-            className="t-label mt-3 cursor-pointer rounded-md border-0 bg-gold-web px-4 py-2 text-navy disabled:bg-line">
-            {busy ? 'Connecting' : 'Finish connecting'}
-          </button>
-        </form>
-      )}
+      <button type="button" onClick={start} disabled={busy}
+        className="t-label mt-3 cursor-pointer rounded-md border-0 bg-gold-web px-4 py-2 text-navy disabled:bg-line">
+        {busy ? 'Opening Microsoft' : view.connected ? 'Reconnect Outlook' : 'Connect Outlook'}
+      </button>
       {message && <p role="status" className="m-0 mt-3">{message}</p>}
+      <p className="m-0 mt-4">Redirect URI to register in Azure (Authentication, Web platform):</p>
+      <code className="mt-1 block break-all rounded-md border border-line bg-white px-3 py-2 text-[13px]">{view.redirect_uri}</code>
     </div>
   )
 }
@@ -128,7 +111,7 @@ export function Sources() {
 
       <section className="mt-10" aria-labelledby="outlook-heading">
         <h2 id="outlook-heading" className="t-section m-0 mb-2">Outlook</h2>
-        <OutlookConnect view={view.outlook} onConnected={load} />
+        <OutlookConnect view={view.outlook} />
       </section>
 
       <section className="mt-10" aria-labelledby="readai-heading">

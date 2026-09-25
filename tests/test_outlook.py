@@ -68,52 +68,54 @@ def http(graph: Graph) -> httpx.Client:
 
 # ---------------------------------------------------------------- sign-in
 
+CALLBACK = "https://ri.example/reports/rasa-incanta/api/outlook/callback"
+
+
 def test_authorization_url_asks_for_delegated_read_only_mail():
-    url = urlparse(outlook.authorization_url(ms_settings(), "state-1"))
+    url = urlparse(outlook.authorization_url(ms_settings(), "state-1", CALLBACK))
     q = parse_qs(url.query)
     assert url.path == "/tenant/oauth2/v2.0/authorize"
     assert q["scope"] == ["Mail.Read User.Read offline_access"] and q["state"] == ["state-1"]
-    assert q["redirect_uri"] == ["http://localhost/callback"] and q["login_hint"] == [MYRAH]
+    assert q["redirect_uri"] == [CALLBACK] and q["login_hint"] == [MYRAH]
     with pytest.raises(outlook.OutlookError):
-        outlook.authorization_url(settings(), "s")  # not configured
+        outlook.authorization_url(settings(), "s", CALLBACK)  # not configured
 
 
-def test_the_redirect_must_carry_our_state_and_a_code():
-    ok = lambda s: s == "good"  # noqa: E731
-    assert outlook.code_from_redirect("http://localhost/callback?code=abc&state=good", ok) == "abc"
-    for url in ("http://localhost/callback?code=abc&state=forged", "http://localhost/callback?code=abc",
-                "http://localhost/callback?state=good", "http://localhost/callback?error=access_denied&state=good"):
-        with pytest.raises(outlook.OutlookError):
-            outlook.code_from_redirect(url, ok)
+def test_redirect_uri_defaults_to_the_apps_own_callback():
+    assert outlook.redirect_uri_for(ms_settings(), "https://ri.example") == CALLBACK
+    assert outlook.redirect_uri_for(ms_settings(), "https://ri.example/") == CALLBACK
+    explicit = ms_settings(ms_redirect_uri="https://portal.example/reports/rasa-incanta/api/outlook/callback")
+    assert outlook.redirect_uri_for(explicit, "https://ri.example") == "https://portal.example/reports/rasa-incanta/api/outlook/callback"
 
 
 def test_connect_stores_tokens_only_for_myrah(migrated):
     graph = Graph()
     with get_sessionmaker()() as s, http(graph) as h:
-        assert outlook.connect(s, ms_settings(), "code-1", h, NOW) == MYRAH
+        assert outlook.connect(s, ms_settings(), "code-1", h, CALLBACK, NOW) == MYRAH
         row = s.scalar(select(OAuthToken))
         assert (row.account, row.refresh_token, row.access_token) == (MYRAH, "refresh-1", "access-1")
     assert graph.token_requests[0]["grant_type"] == "authorization_code"
     assert graph.token_requests[0]["client_secret"] == "secret-value"  # confidential client
+    assert graph.token_requests[0]["redirect_uri"] == CALLBACK  # the same URI the sign-in started with
 
 
 def test_someone_else_signing_in_is_refused_and_nothing_is_saved(migrated):
     with get_sessionmaker()() as s, http(Graph(me="intruder@example.com")) as h:
-        with pytest.raises(outlook.OutlookError, match="not myrah"):
-            outlook.connect(s, ms_settings(), "code", h, NOW)
+        with pytest.raises(outlook.WrongAccount, match="not myrah"):
+            outlook.connect(s, ms_settings(), "code", h, CALLBACK, NOW)
         assert s.scalar(select(OAuthToken)) is None
 
 
 def test_a_bad_client_secret_is_reported_plainly(migrated):
     with get_sessionmaker()() as s, http(Graph(token_status=401)) as h:
         with pytest.raises(outlook.OutlookError, match="Invalid client secret"):
-            outlook.connect(s, ms_settings(), "code", h, NOW)
+            outlook.connect(s, ms_settings(), "code", h, CALLBACK, NOW)
 
 
 def test_access_tokens_refresh_and_the_rotated_refresh_token_is_saved(migrated):
     graph = Graph()
     with get_sessionmaker()() as s, http(graph) as h:
-        outlook.connect(s, ms_settings(), "code", h, NOW)
+        outlook.connect(s, ms_settings(), "code", h, CALLBACK, NOW)
         assert outlook.access_token(s, ms_settings(), h, NOW + timedelta(minutes=30)) == "access-1"  # still valid
         assert outlook.access_token(s, ms_settings(), h, NOW + timedelta(minutes=59, seconds=30)) == "access-2"
         row = s.scalar(select(OAuthToken))
@@ -132,7 +134,7 @@ def test_not_connected_is_a_clear_error(migrated):
 def connected(graph):
     s = get_sessionmaker()()
     with http(Graph()) as h:
-        outlook.connect(s, ms_settings(), "code", h, NOW)
+        outlook.connect(s, ms_settings(), "code", h, CALLBACK, NOW)
     return s
 
 
@@ -173,7 +175,9 @@ def test_fetch_mail_reports_instead_of_raising(migrated):
 
 # ---------------------------------------------------------------- the API
 
-def test_connect_start_and_finish_through_the_api(client, monkeypatch):
+@pytest.fixture()
+def api_graph(client, monkeypatch):
+    """The API wired to a scripted Microsoft; returns (client, graph)."""
     from api.config import get_settings
     import api.main as main
 
@@ -184,16 +188,75 @@ def test_connect_start_and_finish_through_the_api(client, monkeypatch):
     graph = Graph()
     real_client = httpx.Client
     monkeypatch.setattr(main.httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(graph)))
+    return client, graph
 
-    assert client.get("/api/sources").json()["outlook"] == {"configured": True, "connected": False,
-                                                            "account": None, "mailbox": MYRAH}
-    url = client.post("/api/outlook/connect/start").json()["authorize_url"]
-    state = parse_qs(urlparse(url).query)["state"][0]
-    forged = client.post("/api/outlook/connect/finish", json={"redirect_url": "http://localhost/callback?code=c&state=nope"})
-    assert forged.status_code == 400
-    done = client.post("/api/outlook/connect/finish", json={"redirect_url": f"http://localhost/callback?code=c&state={state}"})
-    assert done.json() == {"connected": True, "account": MYRAH}
-    again = client.post("/api/outlook/connect/finish", json={"redirect_url": f"http://localhost/callback?code=c&state={state}"})
-    assert again.status_code == 400  # a state works once
-    assert client.get("/api/sources").json()["outlook"]["connected"] is True
-    assert "access-" not in json.dumps(client.get("/api/sources").json())  # tokens are never returned
+
+RAILWAY = {"host": "ri.example", "x-forwarded-proto": "https"}  # what Railway's edge forwards
+
+
+def start(client, headers=RAILWAY):
+    body = client.post("/api/outlook/connect/start", headers=headers).json()
+    return body, parse_qs(urlparse(body["authorize_url"]).query)["state"][0]
+
+
+@pytest.mark.parametrize("prefix", ["", "/reports/rasa-incanta"])
+def test_microsoft_redirects_back_and_the_sign_in_completes_by_itself(api_graph, prefix):
+    client, graph = api_graph
+    body, state = start(client)
+    assert body["redirect_uri"] == CALLBACK
+    assert parse_qs(urlparse(body["authorize_url"]).query)["redirect_uri"] == [CALLBACK]
+
+    back = client.get(f"{prefix}/api/outlook/callback", params={"code": "the-code", "state": state}, follow_redirects=False)
+    assert back.status_code == 303 and back.headers["location"] == "/reports/rasa-incanta/sources?outlook=connected"
+    assert graph.token_requests[0]["code"] == "the-code" and graph.token_requests[0]["redirect_uri"] == CALLBACK
+    status = client.get("/api/sources").json()["outlook"]
+    assert status["connected"] is True and status["account"] == MYRAH
+    assert "access-" not in json.dumps(client.get("/api/sources").json()) and "refresh-" not in back.text
+
+
+def test_the_sources_page_shows_the_redirect_uri_to_register(api_graph):
+    client, _ = api_graph
+    assert client.get("/api/sources", headers=RAILWAY).json()["outlook"]["redirect_uri"] == CALLBACK
+    local = client.get("/api/sources").json()["outlook"]["redirect_uri"]
+    assert local == "http://testserver/reports/rasa-incanta/api/outlook/callback"
+
+
+def test_a_forged_or_reused_state_is_refused(api_graph):
+    client, graph = api_graph
+    forged = client.get("/api/outlook/callback", params={"code": "c", "state": "forged"}, follow_redirects=False)
+    assert forged.headers["location"].endswith("?outlook=expired") and graph.token_requests == []
+    _, state = start(client)
+    client.get("/api/outlook/callback", params={"code": "c", "state": state}, follow_redirects=False)
+    again = client.get("/api/outlook/callback", params={"code": "c", "state": state}, follow_redirects=False)
+    assert again.headers["location"].endswith("?outlook=expired")  # a state works once
+    assert len(graph.token_requests) == 1
+
+
+def test_a_declined_sign_in_is_reported_without_reflecting_microsofts_text(api_graph):
+    client, graph = api_graph
+    _, state = start(client)
+    back = client.get("/api/outlook/callback", follow_redirects=False,
+                      params={"error": "access_denied", "error_description": "<script>alert(1)</script>", "state": state})
+    assert back.headers["location"] == "/reports/rasa-incanta/sources?outlook=denied"
+    assert "script" not in back.headers["location"] and "script" not in back.text and graph.token_requests == []
+
+
+def test_someone_else_signing_in_is_refused_through_the_callback(api_graph):
+    client, graph = api_graph
+    graph.me = "intruder@example.com"
+    _, state = start(client)
+    back = client.get("/api/outlook/callback", params={"code": "c", "state": state}, follow_redirects=False)
+    assert back.headers["location"].endswith("?outlook=wrong_account")
+    assert client.get("/api/sources").json()["outlook"]["connected"] is False
+
+
+def test_a_refused_client_secret_is_reported_as_failed(api_graph):
+    client, graph = api_graph
+    graph.token_status = 401
+    _, state = start(client)
+    back = client.get("/api/outlook/callback", params={"code": "c", "state": state}, follow_redirects=False)
+    assert back.headers["location"].endswith("?outlook=failed")
+
+
+def test_the_paste_back_endpoint_is_gone(client):
+    assert client.post("/api/outlook/connect/finish", json={"redirect_url": "x"}).status_code == 404

@@ -15,8 +15,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import Session
 
@@ -193,33 +192,48 @@ async def readai_webhook(request: Request, session: Session = Depends(get_sessio
 
 # ---------------------------------------------------------------- sources and the Outlook sign-in
 
-_OUTLOOK_STATES: dict[str, datetime] = {}  # one-time sign-in states, valid for 15 minutes
+# One-time sign-in states: state -> (expires, redirect URI the sign-in started with). Microsoft
+# requires the code exchange to use exactly that redirect URI, so it travels with the state.
+_OUTLOOK_STATES: dict[str, tuple[datetime, str]] = {}
 _STATE_TTL = timedelta(minutes=15)
 _states_lock = threading.Lock()
 
 
-def _take_state(state: str) -> bool:
+def _take_state(state: str) -> str | None:
+    """The redirect URI for a live, unused state (consuming it), or None."""
     now = datetime.now(timezone.utc)
     with _states_lock:
-        for key, expires in list(_OUTLOOK_STATES.items()):
+        for key, (expires, _) in list(_OUTLOOK_STATES.items()):
             if expires < now:
                 del _OUTLOOK_STATES[key]
-        return _OUTLOOK_STATES.pop(state, None) is not None
+        entry = _OUTLOOK_STATES.pop(state, None) if state else None
+    return entry[1] if entry else None
 
 
-class OutlookFinish(BaseModel):
-    redirect_url: str
+def _origin(request: Request) -> str:
+    """This app's public origin. Railway (and the portal gateway) terminate TLS and forward the
+    original scheme and host; trusting them here is safe because Microsoft only redirects to URIs
+    registered in Azure, so a forged host can only ever produce a sign-in Microsoft refuses."""
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip()
+    host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc).split(",")[0].strip()
+    return f"{proto}://{host}"
+
+
+def _back_to_sources(outcome: str) -> RedirectResponse:
+    # A fixed status word only: nothing from Microsoft's query string is ever reflected back.
+    return RedirectResponse(f"{REPORT_PREFIX}/sources?outlook={outcome}", status_code=303)
 
 
 @fastapi_app.get("/api/sources")
-def sources_status(session: Session = Depends(get_session)) -> dict:
-    """Where each source stands: the latest run's status per source, the Outlook connection,
-    and how many Read.ai meetings have arrived."""
+def sources_status(request: Request, session: Session = Depends(get_session)) -> dict:
+    """Where each source stands: the latest run's status per source, the Outlook connection (with
+    the redirect URI to register in Azure), and how many Read.ai meetings have arrived."""
     settings = get_settings()
     latest = session.scalar(select(Run).order_by(Run.started_at.desc()).limit(1))
     return {
         "last_run": run_payload(latest) if latest else None,
-        "outlook": outlook.status(session, settings),
+        "outlook": {**outlook.status(session, settings),
+                    "redirect_uri": outlook.redirect_uri_for(settings, _origin(request))},
         "readai": {"configured": bool(settings.readai_webhook_secret),
                    "meetings": session.scalar(select(func.count()).select_from(Meeting)),
                    "webhook_path": "/api/webhooks/readai"},
@@ -229,30 +243,47 @@ def sources_status(session: Session = Depends(get_session)) -> dict:
 
 
 @fastapi_app.post("/api/outlook/connect/start")
-def outlook_connect_start() -> dict:
+def outlook_connect_start(request: Request) -> dict:
+    """Begin Myrah's one-time sign-in: the page sends the browser to `authorize_url`, and
+    Microsoft returns it to GET /api/outlook/callback."""
+    settings = get_settings()
     state = secrets.token_urlsafe(24)
+    redirect_uri = outlook.redirect_uri_for(settings, _origin(request))
     try:
-        url = outlook.authorization_url(get_settings(), state)
+        url = outlook.authorization_url(settings, state, redirect_uri)
     except outlook.OutlookError as exc:
         raise HTTPException(400, str(exc))
     with _states_lock:
-        _OUTLOOK_STATES[state] = datetime.now(timezone.utc) + _STATE_TTL
-    return {"authorize_url": url}
+        _OUTLOOK_STATES[state] = (datetime.now(timezone.utc) + _STATE_TTL, redirect_uri)
+    return {"authorize_url": url, "redirect_uri": redirect_uri}
 
 
-@fastapi_app.post("/api/outlook/connect/finish")
-def outlook_connect_finish(body: OutlookFinish, session: Session = Depends(get_session)) -> dict:
-    settings = get_settings()
+@fastapi_app.get("/api/outlook/callback", include_in_schema=False)
+def outlook_callback(code: str | None = None, state: str | None = None, error: str | None = None,
+                     session: Session = Depends(get_session)) -> RedirectResponse:
+    """Microsoft's redirect after the sign-in. Checks the one-time state, exchanges the code, keeps
+    the tokens only if Myrah signed in, then returns the browser to the Sources page."""
+    redirect_uri = _take_state(state or "")
+    if error:
+        logger.info("Outlook sign-in declined or failed at Microsoft: %s", error[:100])
+        return _back_to_sources("denied")
+    if redirect_uri is None:
+        return _back_to_sources("expired")
+    if not code:
+        return _back_to_sources("failed")
     try:
-        code = outlook.code_from_redirect(body.redirect_url, _take_state)
         with httpx.Client(timeout=30.0) as http:
-            account = outlook.connect(session, settings, code, http)
+            outlook.connect(session, get_settings(), code, http, redirect_uri)
+    except outlook.WrongAccount as exc:
+        logger.warning("Outlook sign-in refused: %s", exc)
+        return _back_to_sources("wrong_account")
     except outlook.OutlookError as exc:
-        raise HTTPException(400, str(exc))
+        logger.warning("Outlook sign-in failed: %s", exc)
+        return _back_to_sources("failed")
     except httpx.HTTPError as exc:
         logger.warning("Outlook sign-in could not reach Microsoft: %s", exc)
-        raise HTTPException(502, "Could not reach Microsoft to finish the sign-in. Try again.")
-    return {"connected": True, "account": account}
+        return _back_to_sources("failed")
+    return _back_to_sources("connected")
 
 
 @fastapi_app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"], include_in_schema=False)

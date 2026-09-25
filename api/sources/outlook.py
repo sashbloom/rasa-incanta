@@ -6,6 +6,9 @@ with MS_CLIENT_ID / MS_CLIENT_SECRET) and the refresh token then mints access to
 Microsoft rotates the refresh token on every use, so it is saved back to `oauth_tokens` each time.
 
 Differences from the ICP bot:
+- Microsoft redirects straight back to our own `GET /api/outlook/callback`, which finishes the
+  sign-in: no pasting URLs. The redirect URI is MS_REDIRECT_URI when set, otherwise the app's own
+  address (see `redirect_uri_for`), and must be registered on the app registration in Azure.
 - Tokens live in our Postgres (`oauth_tokens`), not a file on disk.
 - A sign-in is accepted only for MYRAH_MAILBOX: after the code exchange we ask Graph who signed
   in, and anyone else is refused and nothing is stored. The board is open, so this is what stops
@@ -22,13 +25,13 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import urlencode
 
 import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from api.config import Settings
+from api.config import REPORT_PREFIX, Settings
 from api.models import OAuthToken
 
 logger = logging.getLogger(__name__)
@@ -51,6 +54,13 @@ class NotConnected(OutlookError):
     pass
 
 
+class WrongAccount(OutlookError):
+    """Someone other than MYRAH_MAILBOX signed in; nothing was stored."""
+
+
+CALLBACK_PATH = "/api/outlook/callback"
+
+
 def _authority(settings: Settings) -> str:
     return f"https://login.microsoftonline.com/{settings.ms_tenant_id}/oauth2/v2.0"
 
@@ -61,26 +71,22 @@ def configured(settings: Settings) -> bool:
 
 # ---------------------------------------------------------------- one-time sign-in
 
-def authorization_url(settings: Settings, state: str) -> str:
+def redirect_uri_for(settings: Settings, origin: str) -> str:
+    """Where Microsoft sends the browser back: MS_REDIRECT_URI when set, otherwise this app's own
+    callback under the report prefix, e.g. https://<domain>/reports/rasa-incanta/api/outlook/callback.
+    Either way it must be registered on the app in Azure; Microsoft refuses any other address."""
+    if settings.ms_redirect_uri.strip():
+        return settings.ms_redirect_uri.strip()
+    return f"{origin.rstrip('/')}{REPORT_PREFIX}{CALLBACK_PATH}"
+
+
+def authorization_url(settings: Settings, state: str, redirect_uri: str) -> str:
     if not configured(settings):
         raise OutlookError("Outlook is not configured: set MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET and MYRAH_MAILBOX.")
-    params = {"client_id": settings.ms_client_id, "response_type": "code", "redirect_uri": settings.ms_redirect_uri,
+    params = {"client_id": settings.ms_client_id, "response_type": "code", "redirect_uri": redirect_uri,
               "response_mode": "query", "scope": SCOPE, "state": state, "login_hint": settings.myrah_mailbox,
               "prompt": "select_account"}
     return f"{_authority(settings)}/authorize?{urlencode(params)}"
-
-
-def code_from_redirect(redirect_url: str, expected_state: Callable[[str], bool]) -> str:
-    """The `code` from the URL the browser landed on after sign-in, once its `state` checks out."""
-    query = parse_qs(urlparse(redirect_url.strip()).query)
-    if "error" in query:
-        raise OutlookError(f"Sign-in did not complete: {query['error'][0]}. {query.get('error_description', [''])[0]}")
-    state = (query.get("state") or [""])[0]
-    if not state or not expected_state(state):
-        raise OutlookError("That sign-in link has expired or was not started here. Start the connection again.")
-    if "code" not in query:
-        raise OutlookError("No sign-in code in that URL. Paste the full address your browser landed on.")
-    return query["code"][0]
 
 
 def _token_request(settings: Settings, http: httpx.Client, data: dict) -> dict:
@@ -119,16 +125,18 @@ def _store(session: Session, account: str, token: dict, now: datetime) -> OAuthT
     return row
 
 
-def connect(session: Session, settings: Settings, code: str, http: httpx.Client, now: datetime | None = None) -> str:
-    """Finish the sign-in: exchange the code, refuse anyone but Myrah, store the tokens."""
+def connect(session: Session, settings: Settings, code: str, http: httpx.Client, redirect_uri: str,
+            now: datetime | None = None) -> str:
+    """Finish the sign-in: exchange the code, refuse anyone but Myrah, store the tokens.
+    `redirect_uri` must be the one the sign-in started with; Microsoft checks they match."""
     now = now or datetime.now(timezone.utc)
     token = _token_request(settings, http, {"grant_type": "authorization_code", "code": code,
-                                            "redirect_uri": settings.ms_redirect_uri})
+                                            "redirect_uri": redirect_uri})
     if not token.get("refresh_token"):
         raise OutlookError("Microsoft returned no refresh token, so mail could not be read unattended.")
     account = signed_in_mailbox(http, token["access_token"])
     if account != settings.myrah_mailbox.strip().lower():
-        raise OutlookError(f"Signed in as {account or 'an unknown account'}, not {settings.myrah_mailbox}. Nothing was saved.")
+        raise WrongAccount(f"Signed in as {account or 'an unknown account'}, not {settings.myrah_mailbox}. Nothing was saved.")
     _store(session, account, token, now)
     return account
 

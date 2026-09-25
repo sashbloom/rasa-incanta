@@ -80,8 +80,9 @@ class Settings(BaseSettings):
     ms_client_id: str = ""
     ms_client_secret: str = ""
     myrah_mailbox: str = ""
-    # Delegated Graph sign-in (Myrah signs in once). Must be registered on the app registration.
-    ms_redirect_uri: str = "http://localhost/callback"
+    # Delegated Graph sign-in (Myrah signs in once). Unset = this app's own callback,
+    # <origin>/reports/rasa-incanta/api/outlook/callback. Whichever it is, register it in Azure.
+    ms_redirect_uri: str = ""
 
     # Setu, read-only Postgres mirror `wisible_data` (Brick 3). Same rule: the URL wins.
     setu_db_url: str = ""

@@ -105,7 +105,7 @@ export type DealDetail = {
 
 export type SourcesView = {
   last_run: RunView | null
-  outlook: { configured: boolean; connected: boolean; account: string | null; mailbox: string | null }
+  outlook: { configured: boolean; connected: boolean; account: string | null; mailbox: string | null; redirect_uri: string }
   readai: { configured: boolean; meetings: number; webhook_path: string }
   exa: { configured: boolean }
   anthropic: { configured: boolean }

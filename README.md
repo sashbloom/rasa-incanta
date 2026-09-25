@@ -76,10 +76,12 @@ Claude call per deal. Runs never overlap.
 
 The **Sources** page shows each source's status from the latest run.
 
-- **Outlook:** register `MS_REDIRECT_URI` (default `http://localhost/callback`) on the app
-  registration, then press Connect Outlook on the Sources page, sign in as Myrah and paste the
-  address the browser lands on. Only Myrah's own sign-in is accepted. `MS_CLIENT_SECRET` must be
-  the secret's value, not its ID.
+- **Outlook:** in Azure, add the redirect URI the Sources page shows (App registration >
+  Authentication > Web > Redirect URIs). By default that is
+  `https://<domain>/reports/rasa-incanta/api/outlook/callback`; set `MS_REDIRECT_URI` to use a
+  different one. Then press Connect Outlook and sign in as Myrah: Microsoft returns to
+  `/api/outlook/callback` and the connection completes by itself. Only Myrah's own sign-in is
+  accepted. `MS_CLIENT_SECRET` must be the secret's value, not its ID.
 - **Read.ai:** in Read.ai add a workspace webhook for "meeting end" pointed at the address the
   Sources page shows (`https://<domain>/reports/rasa-incanta/api/webhooks/readai`), and set
   `READAI_WEBHOOK_SECRET` to the signing key Read.ai gives you.
