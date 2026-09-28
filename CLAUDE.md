@@ -89,7 +89,11 @@ account-fit and stakeholder logic is copied into this codebase, not called over 
   `employees`, plus `knowledge_chunks` types `skill_profile`, `resume`, `partner_profile`.
   `engine/capability.py` uses the ICP bot's P2 matcher and its Claude re-rank (one call per deal);
   if the re-rank fails it falls back to our strict match (same industry, or rare shared terms with
-  keyword score >= 0.5), never to the re-rank's own zero-score fallback. SMEs come from the P3 team
+  keyword score >= 0.5), never to the re-rank's own zero-score fallback. The P2 case-study and P3
+  external-SME rerank prompts (`api/icp/p2_case_study_matcher.py`, `p3_external_sme_matcher.py`)
+  split the whole Setu library (byte-identical every call, sorted by name) into a cached system
+  block from the deal-specific hints and problem text, which stay in the uncached user prompt — see
+  `anthropic_client._cached_system_blocks()`'s `extra_cached`. SMEs come from the P3 team
   matcher, active people only, no extra call.
 - **Conversation from Zoho:** `reachout_tracker` (the deal's outreach log) gives every in-scope
   deal a dated touch with the person met, designation, role and remarks, read in `sources/zoho.py`.
@@ -126,6 +130,10 @@ account-fit and stakeholder logic is copied into this codebase, not called over 
   The client is built from our settings with `host=LANGFUSE_BASEURL` (the SDK itself only reads
   `LANGFUSE_HOST` from os.environ). A run sets the session `rasa-incanta:run:<id>`; every
   `pool.submit` must wrap its target in `tracing.propagate_context` or its calls lose the session.
+  This applies at EVERY thread boundary, not just the outermost one: `exa_search.search_many()`
+  spawns its own pool for concurrent queries, nested inside whatever pool its caller already runs
+  in, and needs its own `propagate_context` wrap too — confirmed live, 400 of a run's Exa traces
+  had none until this was fixed.
 - **Exa:** `EXA_API_KEY` powers all company and contact web research: the ICP bot's criteria
   (ownership, scale, financials, competitors) and contact personas. Never Claude's web_search tool
   and never LinkedIn scraping. Without it those criteria are data gaps, as in the ICP bot, scores

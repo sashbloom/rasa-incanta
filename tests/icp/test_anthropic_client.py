@@ -400,3 +400,34 @@ def test_generate_structured_narrative_keeps_the_rubric_by_default(monkeypatch):
     ac.generate_structured_narrative("p", {"type": "object"})
 
     assert "FULL SCORING RUBRIC" in captured["system"][0]["text"]
+
+
+def test_cached_system_blocks_can_carry_a_second_cached_block():
+    """The Setu rerankers' whole case-study/partner library, byte-identical across every call from
+    that call site — a second breakpoint on top of the persona block, not folded into it (folding
+    it in would make the persona-only cache entry every OTHER caller reads from a different,
+    library-sized entry for no reason)."""
+    plain = ac._cached_system_blocks(include_skill_reference=False)
+    with_catalog = ac._cached_system_blocks(include_skill_reference=False, extra_cached="CASE STUDY LIBRARY:\n1. Foo")
+
+    assert len(plain) == 1 and len(with_catalog) == 2
+    assert with_catalog[0] == plain[0]  # the persona block itself is untouched
+    assert with_catalog[1]["text"] == "CASE STUDY LIBRARY:\n1. Foo"
+    assert with_catalog[1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_generate_structured_narrative_passes_extra_cached_through(monkeypatch):
+    captured = _capture_system(monkeypatch)
+
+    ac.generate_structured_narrative("p", {"type": "object"}, include_skill_reference=False, extra_cached="LIBRARY TEXT")
+
+    assert captured["system"][1]["text"] == "LIBRARY TEXT"
+    assert captured["system"][1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_generate_structured_narrative_omits_the_second_block_when_no_catalog_is_given(monkeypatch):
+    captured = _capture_system(monkeypatch)
+
+    ac.generate_structured_narrative("p", {"type": "object"})
+
+    assert len(captured["system"]) == 1  # no wasted cache-write for callers that have no library

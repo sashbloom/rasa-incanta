@@ -158,3 +158,28 @@ def test_search_many_returns_empty_string_for_no_results():
             text = ex.search_many(["a query"])
 
     assert text == ""
+
+
+def test_search_many_propagates_the_langfuse_session_into_its_own_thread_pool(monkeypatch):
+    """search_many() spawns its OWN ThreadPoolExecutor for concurrent queries. Confirmed live: 400
+    of a run's Exa traces had no sessionId at all, because that inner pool wasn't wrapped in
+    tracing.propagate_context() — contextvars don't cross a thread boundary automatically, and this
+    is a SECOND boundary below whatever pool the caller (e.g. gather_secondary_research()) itself
+    already runs inside."""
+    from api.icp import tracing
+    from api.icp.compat import Settings
+
+    monkeypatch.setattr(ex, "get_settings", lambda: Settings(_env_file=None, exa_api_key="k"))
+    monkeypatch.setattr(tracing, "TRACING_ENABLED", True)
+    client = MagicMock()
+    token = tracing.current_run_id.set("rasa-incanta:20260928:Acme")
+    try:
+        with patch("langfuse.get_client", return_value=client):
+            with patch.object(ex.httpx, "post", return_value=_fake_response(json_data={"results": []})):
+                ex.search_many(["q1", "q2", "q3", "q4"])
+    finally:
+        tracing.current_run_id.reset(token)
+
+    calls = client.start_span.return_value.update_trace.call_args_list
+    sessions = {c.kwargs.get("session_id") for c in calls}
+    assert len(calls) == 4 and sessions == {"rasa-incanta:20260928:Acme"}  # every query's own thread saw it

@@ -149,7 +149,16 @@ def search_many(
     A single failed query is logged and skipped rather than failing the
     whole batch — one bad query shouldn't cost every other query's real
     results, matching how every other connector in this pipeline degrades
-    (evidence_assembler.py's own individually-wrapped calls)."""
+    (evidence_assembler.py's own individually-wrapped calls).
+
+    Rasa Incanta fix: `tracing.propagate_context()` wraps `_run_one` below before it goes to
+    `.submit()`. Without it, every search from this pool landed in Langfuse with no session at
+    all — the caller (e.g. gather_secondary_research()) already runs inside a worker thread that
+    got `current_run_id` from ITS OWN `propagate_context()` wrap one level up, but that value does
+    not survive a second, unrelated ThreadPoolExecutor spawned from inside that thread: contextvars
+    never cross a thread boundary automatically, no matter how many are nested, and each boundary
+    needs its own explicit copy. Confirmed live: 400 of a run's Exa traces had no sessionId at all,
+    all from this exact pool."""
     contents: dict = {"text": {"maxCharacters": max_characters}} if max_characters else {"highlights": True}
 
     def _run_one(query: str) -> tuple[str, list[dict]]:
@@ -162,7 +171,7 @@ def search_many(
     blocks: list[str] = []
     urls_seen: set[str] = set()
     with ThreadPoolExecutor(max_workers=min(8, len(queries)) or 1) as pool:
-        futures = {pool.submit(_run_one, q): q for q in queries}
+        futures = {pool.submit(tracing.propagate_context(_run_one), q): q for q in queries}
         for future in futures:
             query = futures[future]
             try:

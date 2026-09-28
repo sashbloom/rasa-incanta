@@ -101,7 +101,10 @@ Exa searches plus one Claude call per contact the first time they are researched
 share one cached system prefix (instructions, Ideas Treasury, compose rules); only the deal's
 context card varies. With Mahak's Ideas Treasury (`api/engine/reference/ideas_treasury.md`) the
 prefix is about 2,000 tokens, past Sonnet 5's 1024-token caching minimum, so every NBA call after
-the first in a run reads it from cache.
+the first in a run reads it from cache. The Setu case-study and external-SME reranks (inside ICP
+scoring) do the same with their library of case studies or partner profiles: the whole library is
+one cached block, byte-identical every call, and only each deal's own hints and problem text are
+sent fresh — confirmed live this was ~$18/day of an 87-deal run's cost before caching.
 
 ## Deploy on Railway
 

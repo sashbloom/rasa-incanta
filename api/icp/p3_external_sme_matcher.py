@@ -107,6 +107,19 @@ _RERANK_SCHEMA = {
 }
 
 
+def _partner_catalog(matches: list[dict]) -> str:
+    """The full external-partner-profile library, in a FIXED order (sorted by name) that doesn't
+    depend on any deal's keyword scoring. `matches` is effectively the whole corpus at the one call
+    site (find_external_sme_matches()'s default limit is 100, above the real ~85 total), so this
+    text is byte-identical across every rerank call in a run — see
+    p2_case_study_matcher._case_study_catalog(), the same fix for the same problem."""
+    ordered = sorted(matches, key=lambda m: m["name"])
+    lines = [f"{m['name']} — content: \"{m['content'][:500]}\"" for m in ordered]
+    return ("EXTERNAL PARTNER PROFILE LIBRARY (every profile on file; read it once — the per-deal "
+            "instructions that follow tell you which of these are keyword matches for THIS deal):\n"
+            + "\n".join(f"{i + 1}. {line}" for i, line in enumerate(lines)))
+
+
 def rerank_external_smes_with_llm(matches: list[dict], *, problem_context: str, limit: int = 3) -> list[dict]:
     """Keeps the deterministic DB retrieval (the reliable part) but hands
     its already-retrieved candidates to one small, bounded LLM call whose
@@ -115,6 +128,10 @@ def rerank_external_smes_with_llm(matches: list[dict], *, problem_context: str, 
     client contract rather than a genuine external partner's own profile —
     a real, known data-quality issue in this source that keyword scoring
     has no way to detect.
+
+    The library itself goes in a cached system block (_partner_catalog(), byte-identical every
+    call); only the deal's keyword ranking and problem text — genuinely different per call — go in
+    the uncached user prompt. See p2_case_study_matcher.rerank_case_studies_with_llm()'s docstring.
 
     Falls back to the deterministic ranking (matches[:limit]) on ANY
     failure or hallucinated name, same resilience pattern as
@@ -125,23 +142,26 @@ def rerank_external_smes_with_llm(matches: list[dict], *, problem_context: str, 
 
     from .anthropic_client import generate_structured_narrative
 
-    candidate_lines = [f"{m['name']} — content: \"{m['content'][:500]}\"" for m in matches]
+    catalog = _partner_catalog(matches)
+    ranked = [m["name"] for m in sorted(matches, key=lambda m: m["score"], reverse=True) if m["score"] > 0]
 
-    prompt = f"""From the partner profiles below, pick and ORDER the {limit} most relevant external \
-specialists for this deal, closest match FIRST. These are meant to be genuine EXTERNAL partner/\
-specialist profiles — this source is known to sometimes contain mis-filed internal Practus engagement \
-letters or client contracts instead of a real external partner's own profile; EXCLUDE any candidate \
-that reads like that rather than a genuine external partner. Use ONLY the evidence given — never \
-invent a detail, and never select a name that isn't in the list below. Picking fewer than {limit} \
+    prompt = f"""From the partner profile library above, pick and ORDER the {limit} most relevant \
+external specialists for this deal, closest match FIRST. These are meant to be genuine EXTERNAL \
+partner/specialist profiles — this source is known to sometimes contain mis-filed internal Practus \
+engagement letters or client contracts instead of a real external partner's own profile; EXCLUDE any \
+candidate that reads like that rather than a genuine external partner. Use ONLY the evidence given — \
+never invent a detail, and never select a name that isn't in the library. Picking fewer than {limit} \
 (including zero) is better than padding with an irrelevant or mis-filed entry.
 
-DEAL / CAPABILITY-GAP CONTEXT: {problem_context[:1500]}
+FOR THIS DEAL:
+- Deterministic keyword ranking, best first (a starting point, not a mandate — re-order using the \
+library's actual content): {", ".join(ranked) or "none"}
 
-PARTNER PROFILES:
-{chr(10).join(f"{i + 1}. {line}" for i, line in enumerate(candidate_lines))}"""
+DEAL / CAPABILITY-GAP CONTEXT: {problem_context[:1500]}"""
 
     try:
-        data = generate_structured_narrative(prompt, _RERANK_SCHEMA, max_tokens=4000, label="p3_external_sme_rerank", include_skill_reference=False)
+        data = generate_structured_narrative(prompt, _RERANK_SCHEMA, max_tokens=4000, label="p3_external_sme_rerank",
+                                             include_skill_reference=False, extra_cached=catalog)
     except Exception as exc:
         logger.warning("P3 external-SME LLM rerank FAILED: %s — falling back to the deterministic ranking.", exc)
         return matches[:limit]

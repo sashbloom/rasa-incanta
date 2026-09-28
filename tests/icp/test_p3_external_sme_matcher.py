@@ -132,3 +132,36 @@ def test_rerank_external_smes_with_llm_falls_back_when_it_hallucinates_a_name():
         result = sm.rerank_external_smes_with_llm(matches, problem_context="Sula Wines growth")
 
     assert result == matches[:3]
+
+
+# ---------------------------------------------------------------- prompt caching (the catalog block)
+
+def test_the_catalog_is_byte_identical_regardless_of_this_deals_scoring():
+    a = [_match("Wine Industry Specialists LLP", content="Vineyard advisory.", score=3.0),
+         _match("General Ops Partners", content="Ops consulting.", score=0.0)]
+    b = [_match("General Ops Partners", content="Ops consulting.", score=5.0),
+         _match("Wine Industry Specialists LLP", content="Vineyard advisory.", score=1.0)]
+
+    assert sm._partner_catalog(a) == sm._partner_catalog(b)
+    assert sm._partner_catalog(a).index("General Ops Partners") < sm._partner_catalog(a).index("Wine Industry")  # sorted
+
+
+def test_rerank_sends_the_catalog_as_a_cached_block_and_hints_not_content_in_the_prompt():
+    matches = [_match("Wine Industry Specialists LLP", content="Vineyard advisory.", score=3.0),
+              _match("General Ops Partners", content="Ops consulting.", score=0.0)]
+
+    with patch(
+        "api.icp.anthropic_client.generate_structured_narrative",
+        return_value={"selected": [{"name": "Wine Industry Specialists LLP", "rationale": "Fits."}]},
+    ) as mock_generate:
+        sm.rerank_external_smes_with_llm(matches, problem_context="Sula Wines growth", limit=3)
+
+    kwargs = mock_generate.call_args.kwargs
+    catalog = kwargs["extra_cached"]
+    assert "Vineyard advisory." in catalog and "Ops consulting." in catalog
+
+    prompt = mock_generate.call_args.args[0]
+    assert "Vineyard advisory." not in prompt and "Ops consulting." not in prompt
+    assert "Wine Industry Specialists LLP" in prompt  # the deterministic ranking hint, by name only
+    assert "Sula Wines growth" in prompt
+    assert kwargs["include_skill_reference"] is False

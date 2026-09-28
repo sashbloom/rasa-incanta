@@ -328,9 +328,19 @@ def get_research_client() -> anthropic.Anthropic:
     return get_client().with_options(timeout=_RESEARCH_TIMEOUT_SECONDS)
 
 
-def _cached_system_blocks(extra: str = "", *, include_skill_reference: bool = True) -> list[dict]:
+def _cached_system_blocks(extra: str = "", *, include_skill_reference: bool = True,
+                          extra_cached: str | None = None) -> list[dict]:
     """Persona (+ the full skill text, unless the caller opts out) first, then
     per-run instructions after the cache breakpoint.
+
+    `extra_cached`, when given, is a SECOND system block with its OWN cache_control breakpoint --
+    for content that repeats identically across every call from one call SITE (e.g. the whole Setu
+    case-study or external-partner library a rerank sends on every call) but isn't shared with every
+    other call, so it doesn't belong baked into the persona block above. Rasa Incanta addition (the
+    ICP bot never had a second cached block): a run rescoring dozens of companies calls the same
+    reranker dozens of times with the same library, so the write happens once and every later call
+    in the run reads it at a tenth of the price -- see p2_case_study_matcher._case_study_catalog()
+    for why the CALLER, not this function, is responsible for making that text byte-identical.
 
     `include_skill_reference=False` drops the 808-line scoring rubric, leaving
     only the firm-identity persona. Six call sites take that option: the three
@@ -368,6 +378,8 @@ def _cached_system_blocks(extra: str = "", *, include_skill_reference: bool = Tr
             "cache_control": {"type": "ephemeral"},
         }
     ]
+    if extra_cached:
+        blocks.append({"type": "text", "text": extra_cached, "cache_control": {"type": "ephemeral"}})
     if extra:
         blocks.append({"type": "text", "text": extra})
     return blocks
@@ -485,7 +497,7 @@ def research(prompt: str) -> str:
 
 def generate_structured_narrative(
     prompt: str, schema: dict, *, max_tokens: int = 8000, label: str = "generate_structured_narrative()",
-    include_skill_reference: bool = True,
+    include_skill_reference: bool = True, extra_cached: str | None = None,
 ) -> dict:
     """Same call as `generate_narrative`, but forced into `schema` — used
     by `narrative_generator.py` to get render_models-shaped JSON directly
@@ -514,7 +526,7 @@ def generate_structured_narrative(
         client,
         model=settings.anthropic_model_narrative,
         max_tokens=max_tokens,
-        system=_cached_system_blocks(include_skill_reference=include_skill_reference),
+        system=_cached_system_blocks(include_skill_reference=include_skill_reference, extra_cached=extra_cached),
         messages=[{"role": "user", "content": prompt}],
         schema=schema,
         label=label,

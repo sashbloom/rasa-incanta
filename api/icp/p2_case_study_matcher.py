@@ -168,6 +168,27 @@ _RERANK_SCHEMA = {
 }
 
 
+def _case_study_catalog(matches: list[dict]) -> str:
+    """The full case-study library, formatted in a FIXED order (sorted by name) that does not
+    depend on any deal's keyword/industry/geography scoring. `matches` is effectively the whole
+    corpus at both call sites (find_case_study_matches()'s default limit is 100, well above the
+    real ~90 total) — so this text is byte-identical across every rerank call in a run, no matter
+    which deal or company triggered it, which is what makes it worth caching in the first place.
+
+    Rasa Incanta addition: the ICP bot's own version of this call put the whole library straight
+    into the (deal-specific, uncached) prompt, on every single call — confirmed live, ~$18 of a
+    day's run on this one call, 5.5M uncached input tokens. `matches` is only re-sorted here, not
+    re-fetched, so a caller must still fetch the corpus itself (setu_db.fetch_case_studies() has no
+    ORDER BY — sorting here, not trusting DB row order, is what keeps this string byte-identical
+    from one call to the next)."""
+    ordered = sorted(matches, key=lambda m: m["name"])
+    lines = [f"{m['name']} (Industry: {m['industry'] or 'unknown'}, Service line: {m['service_line'] or 'unknown'}) "
+             f"— content: \"{m['content'][:500]}\"" for m in ordered]
+    return ("CASE STUDY LIBRARY (every Setu case study on file; read it once — the per-deal instructions "
+            "that follow tell you which of these are documented matches for THIS deal):\n"
+            + "\n".join(f"{i + 1}. {line}" for i, line in enumerate(lines)))
+
+
 def rerank_case_studies_with_llm(matches: list[dict], *, problem_context: str, limit: int = 3) -> list[dict]:
     """Keeps the deterministic DB retrieval (the reliable part) but hands
     its already-retrieved, already-evidenced candidates to one small,
@@ -179,6 +200,11 @@ def rerank_case_studies_with_llm(matches: list[dict], *, problem_context: str, l
     (industry closeness matters more than raw keyword overlap, and this
     task requires judging that, not just counting hits).
 
+    The library itself (name, industry, service line, content) goes in a cached system block
+    (_case_study_catalog(), byte-identical every call); only the deal's own industry/geography
+    matches, its deterministic ranking, and its problem text — all genuinely different per call —
+    go in the uncached user prompt. See _cached_system_blocks()'s `extra_cached` docstring.
+
     Falls back to the deterministic ranking (matches[:limit]) on ANY
     failure or hallucinated name, same resilience pattern as
     p3_team_matcher.rerank_matches_with_llm()."""
@@ -187,31 +213,29 @@ def rerank_case_studies_with_llm(matches: list[dict], *, problem_context: str, l
 
     from .anthropic_client import generate_structured_narrative
 
-    candidate_lines = []
-    for m in matches:
-        parts = [f"{m['name']} (Industry: {m['industry'] or 'unknown'}, Service line: {m['service_line'] or 'unknown'})"]
-        if m["industry_match"]:
-            parts.append("documented industry match for this deal")
-        if m.get("geography_match"):
-            parts.append("documented geography match for this deal")
-        parts.append(f"content: \"{m['content'][:500]}\"")
-        candidate_lines.append(" — ".join(parts))
+    catalog = _case_study_catalog(matches)
+    industry_hits = [m["name"] for m in matches if m["industry_match"]]
+    geography_hits = [m["name"] for m in matches if m.get("geography_match")]
+    ranked = [m["name"] for m in sorted(matches, key=lambda m: m["score"], reverse=True) if m["score"] > 0]
 
-    prompt = f"""From the case studies below, pick and ORDER the {limit} most relevant to this client's \
-problem, closest match FIRST. Follow icp-skill.md's own priority exactly: (1) same problem AND same/\
-adjacent industry ranks highest, (2) same problem but a different industry ranks next, (3) an adjacent \
-problem but the same industry ranks next, (4) generic capability with no specific case ranks last. Within \
-the same priority tier, a documented geography match is a secondary tiebreaker — same problem AND same/\
-adjacent industry AND same geography should rank above the same problem+industry match with no geography \
-overlap — but never let geography alone outrank a genuinely closer industry/problem match. Use \
-ONLY the evidence given — never invent a detail or an impact number where none is stated, and never \
-select a name that isn't in the list below. Picking fewer than {limit} is better than padding with a \
+    prompt = f"""From the case study library above, pick and ORDER the {limit} most relevant to this \
+client's problem, closest match FIRST. Follow icp-skill.md's own priority exactly: (1) same problem AND \
+same/adjacent industry ranks highest, (2) same problem but a different industry ranks next, (3) an \
+adjacent problem but the same industry ranks next, (4) generic capability with no specific case ranks \
+last. Within the same priority tier, a documented geography match is a secondary tiebreaker — same \
+problem AND same/adjacent industry AND same geography should rank above the same problem+industry match \
+with no geography overlap — but never let geography alone outrank a genuinely closer industry/problem \
+match. Use ONLY the evidence given — never invent a detail or an impact number where none is stated, and \
+never select a name that isn't in the library. Picking fewer than {limit} is better than padding with a \
 weak or irrelevant match.
 
-CLIENT'S PROBLEM / CONTEXT: {problem_context[:1500]}
+FOR THIS DEAL:
+- Documented industry match: {", ".join(industry_hits) or "none"}
+- Documented geography match: {", ".join(geography_hits) or "none"}
+- Deterministic keyword/industry/geography ranking, best first (a starting point, not a mandate — \
+re-order within icp-skill.md's priority above using the library's actual content): {", ".join(ranked) or "none"}
 
-CASE STUDIES:
-{chr(10).join(f"{i + 1}. {line}" for i, line in enumerate(candidate_lines))}"""
+CLIENT'S PROBLEM / CONTEXT: {problem_context[:1500]}"""
 
     try:
         # Raised 2000->4000 proactively: this call now reasons over
@@ -224,7 +248,8 @@ CASE STUDIES:
         # has hit -- this step already degrades gracefully to the
         # deterministic ranking on failure, but that silently loses the
         # whole benefit of reranking, not just a smaller one.
-        data = generate_structured_narrative(prompt, _RERANK_SCHEMA, max_tokens=4000, label="p2_case_study_rerank", include_skill_reference=False)
+        data = generate_structured_narrative(prompt, _RERANK_SCHEMA, max_tokens=4000, label="p2_case_study_rerank",
+                                             include_skill_reference=False, extra_cached=catalog)
     except Exception as exc:
         logger.warning("P2 case-study LLM rerank FAILED: %s — falling back to the deterministic ranking.", exc)
         return matches[:limit]
