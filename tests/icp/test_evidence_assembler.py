@@ -110,7 +110,7 @@ def test_gather_setu_evidence_records_data_gap_on_setu_error():
         crm = ea.build_crm_structured(_deal(client_problem_statement="Cost visibility and control"))
 
     data_gaps: list[str] = []
-    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches", side_effect=RuntimeError("db unreachable")), \
+    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches_embedded", side_effect=RuntimeError("db unreachable")), \
          patch.object(ea.p3_team_matcher, "find_team_matches", side_effect=RuntimeError("db unreachable")), \
          patch.object(ea.p3_external_sme_matcher, "find_external_sme_matches", side_effect=RuntimeError("db unreachable")):
         items = ea.gather_setu_evidence(crm, data_gaps)
@@ -125,7 +125,7 @@ def test_gather_setu_evidence_tags_p2_and_p3_items():
         crm = ea.build_crm_structured(_deal(client_problem_statement="Cost visibility and control"))
 
     data_gaps: list[str] = []
-    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches", return_value=[]), \
+    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches_embedded", return_value=[]), \
          patch.object(ea.p3_team_matcher, "find_team_matches", return_value=[]), \
          patch.object(ea.p3_external_sme_matcher, "find_external_sme_matches", return_value=[]):
         items = ea.gather_setu_evidence(crm, data_gaps)
@@ -149,7 +149,7 @@ def test_gather_setu_evidence_uses_inferred_problem_statement_when_crm_is_empty(
     assert ea.problem_statement_text(crm) is None
 
     data_gaps: list[str] = []
-    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches", return_value=[]) as mock_find, \
+    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches_embedded", return_value=[]) as mock_find, \
          patch.object(ea.p3_team_matcher, "find_team_matches", return_value=[]), \
          patch.object(ea.p3_external_sme_matcher, "find_external_sme_matches", side_effect=RuntimeError("skip")):
         items = ea.gather_setu_evidence(
@@ -172,7 +172,7 @@ def test_gather_setu_evidence_prefers_the_real_crm_problem_over_an_inferred_one(
         crm = ea.build_crm_structured(_deal(client_problem_statement="Real CRM-stated problem"))
 
     data_gaps: list[str] = []
-    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches", return_value=[]) as mock_find, \
+    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches_embedded", return_value=[]) as mock_find, \
          patch.object(ea.p3_team_matcher, "find_team_matches", return_value=[]), \
          patch.object(ea.p3_external_sme_matcher, "find_external_sme_matches", side_effect=RuntimeError("skip")):
         items = ea.gather_setu_evidence(
@@ -196,7 +196,7 @@ def test_gather_setu_evidence_p3_team_lookup_uses_the_real_industry_and_deal_nam
     # deal_name still resolves via problem_statement_text()'s deal-name
     # fallback, so P2/external-SME will also fire -- P2's DB lookup must be
     # mocked too, or this hits the real database over the network.
-    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches", return_value=[]), \
+    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches_embedded", return_value=[]), \
          patch.object(ea.p3_team_matcher, "find_team_matches", return_value=[]) as mock_find, \
          patch.object(ea.p3_external_sme_matcher, "find_external_sme_matches", return_value=[]):
         ea.gather_setu_evidence(crm, data_gaps)
@@ -223,7 +223,7 @@ def test_gather_setu_evidence_p3_team_passes_the_retrieved_candidates_through_ll
     reranked = [{**candidates[0], "llm_rationale": "Genuine fit."}]
 
     data_gaps: list[str] = []
-    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches", return_value=[]), \
+    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches_embedded", return_value=[]), \
          patch.object(ea.p3_team_matcher, "find_team_matches", return_value=candidates), \
          patch.object(ea.p3_team_matcher, "rerank_matches_with_llm", return_value=reranked) as mock_rerank, \
          patch.object(ea.p3_external_sme_matcher, "find_external_sme_matches", return_value=[]):
@@ -259,7 +259,7 @@ def test_gather_setu_evidence_p3_team_lookup_filters_generic_industry_and_anchor
         ))
 
     data_gaps: list[str] = []
-    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches", return_value=[]), \
+    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches_embedded", return_value=[]), \
          patch.object(ea.p3_team_matcher, "find_team_matches", return_value=[]) as mock_find, \
          patch.object(ea.p3_external_sme_matcher, "find_external_sme_matches", return_value=[]):
         ea.gather_setu_evidence(crm, data_gaps)
@@ -299,7 +299,7 @@ def test_gather_setu_evidence_p3_always_describes_the_assigned_ep_even_when_fuzz
         "named_clients": [], "has_resume_on_file": True,
     }
     data_gaps: list[str] = []
-    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches", return_value=[]), \
+    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches_embedded", return_value=[]), \
          patch.object(ea.p3_team_matcher, "find_team_matches", return_value=[]), \
          patch.object(ea.p3_team_matcher, "find_assigned_person_profile",
                        side_effect=lambda name: assigned_profile if name == "Shashank Silhare" else None) as mock_lookup, \
@@ -320,7 +320,7 @@ def test_gather_setu_evidence_external_sme_uses_the_direct_db_lookup_and_llm_rer
     reranked = [{**candidates[0], "llm_rationale": "Directly relevant specialist."}]
 
     data_gaps: list[str] = []
-    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches", return_value=[]), \
+    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches_embedded", return_value=[]), \
          patch.object(ea.p3_team_matcher, "find_team_matches", return_value=[]), \
          patch.object(ea.p3_external_sme_matcher, "find_external_sme_matches", return_value=candidates), \
          patch.object(ea.p3_external_sme_matcher, "rerank_external_smes_with_llm", return_value=reranked) as mock_rerank:
@@ -340,7 +340,7 @@ def test_gather_setu_evidence_external_sme_records_data_gap_when_db_lookup_fails
         ))
 
     data_gaps: list[str] = []
-    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches", return_value=[]), \
+    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches_embedded", return_value=[]), \
          patch.object(ea.p3_external_sme_matcher, "find_external_sme_matches", side_effect=RuntimeError("db unreachable")):
         items = ea.gather_setu_evidence(crm, data_gaps)
 
@@ -511,7 +511,7 @@ def test_assemble_wires_everything_together_and_updates_ownership():
          patch.object(ea.practus_history, "classify", return_value=PractusHistory(is_practus_client=False)), \
          patch.object(ea.ownership_classifier, "classify", return_value=ownership), \
          patch.object(ea.exa_search, "search_many", return_value="Some evidence text."), \
-         patch.object(ea.p2_case_study_matcher, "find_case_study_matches", return_value=[]), \
+         patch.object(ea.p2_case_study_matcher, "find_case_study_matches_embedded", return_value=[]), \
          patch.object(ea.p3_team_matcher, "find_team_matches", return_value=[]), \
          patch.object(ea.p3_external_sme_matcher, "find_external_sme_matches", return_value=[]), \
          patch.object(ea, "research", return_value="Some research finding."), \
@@ -571,7 +571,7 @@ def test_assemble_degrades_to_a_data_gap_when_outlook_mail_search_raises():
          patch.object(ea.practus_history, "classify", return_value=PractusHistory(is_practus_client=False)), \
          patch.object(ea.ownership_classifier, "classify", return_value=ownership), \
          patch.object(ea.exa_search, "search_many", return_value="Some evidence text."), \
-         patch.object(ea.p2_case_study_matcher, "find_case_study_matches", return_value=[]), \
+         patch.object(ea.p2_case_study_matcher, "find_case_study_matches_embedded", return_value=[]), \
          patch.object(ea.p3_team_matcher, "find_team_matches", return_value=[]), \
          patch.object(ea.p3_external_sme_matcher, "find_external_sme_matches", return_value=[]), \
          patch.object(ea, "research", return_value="Some research finding."), \
@@ -619,7 +619,7 @@ def test_assemble_invokes_on_industry_hint_early_with_the_crms_industry_type():
          patch.object(ea.practus_history, "classify", return_value=PractusHistory(is_practus_client=False)), \
          patch.object(ea.ownership_classifier, "classify", return_value=ownership) as mock_classify, \
          patch.object(ea.exa_search, "search_many", return_value="Some evidence text."), \
-         patch.object(ea.p2_case_study_matcher, "find_case_study_matches", return_value=[]), \
+         patch.object(ea.p2_case_study_matcher, "find_case_study_matches_embedded", return_value=[]), \
          patch.object(ea.p3_team_matcher, "find_team_matches", return_value=[]), \
          patch.object(ea.p3_external_sme_matcher, "find_external_sme_matches", return_value=[]), \
          patch.object(ea, "research", return_value="Some research finding."), \
@@ -675,7 +675,7 @@ def test_gather_secondary_research_and_financials_both_run_when_ownership_resolv
          patch.object(ea.practus_history, "classify", return_value=PractusHistory(is_practus_client=False)), \
          patch.object(ea.ownership_classifier, "classify", return_value=ownership), \
          patch.object(ea.exa_search, "search_many", return_value="Some evidence text."), \
-         patch.object(ea.p2_case_study_matcher, "find_case_study_matches", return_value=[]), \
+         patch.object(ea.p2_case_study_matcher, "find_case_study_matches_embedded", return_value=[]), \
          patch.object(ea.p3_team_matcher, "find_team_matches", return_value=[]), \
          patch.object(ea.p3_external_sme_matcher, "find_external_sme_matches", return_value=[]), \
          patch.object(ea, "research", return_value="Named peer: Diageo India.") as mock_research, \
@@ -720,7 +720,7 @@ def test_assemble_feeds_secondary_research_text_into_the_p3_team_keyword_context
          patch.object(ea.practus_history, "confirmed_clients_by_keyword_context", return_value=(None, [])), \
          patch.object(ea.ownership_classifier, "classify", return_value=ownership), \
          patch.object(ea.exa_search, "search_many", return_value="Some evidence text."), \
-         patch.object(ea.p2_case_study_matcher, "find_case_study_matches", return_value=[]), \
+         patch.object(ea.p2_case_study_matcher, "find_case_study_matches_embedded", return_value=[]), \
          patch.object(ea.p3_team_matcher, "find_team_matches", return_value=[]) as mock_find, \
          patch.object(ea.p3_external_sme_matcher, "find_external_sme_matches", return_value=[]), \
          patch.object(ea, "research", return_value="Named peer: Diageo India, via its subsidiary United Spirits."), \
@@ -764,7 +764,7 @@ def test_assemble_finds_a_keyword_matched_industry_credential_when_exact_match_i
                        return_value=["Theobroma Foods Private Limited"]), \
          patch.object(ea.ownership_classifier, "classify", return_value=ownership), \
          patch.object(ea.exa_search, "search_many", return_value="Some evidence text."), \
-         patch.object(ea.p2_case_study_matcher, "find_case_study_matches", return_value=[]), \
+         patch.object(ea.p2_case_study_matcher, "find_case_study_matches_embedded", return_value=[]), \
          patch.object(ea.p3_team_matcher, "find_team_matches", return_value=[]), \
          patch.object(ea.p3_external_sme_matcher, "find_external_sme_matches", return_value=[]), \
          patch.object(ea, "research", return_value="Sula operates in the FMCG / alcoholic beverages segment."), \
@@ -804,7 +804,7 @@ def test_assemble_skips_the_keyword_proxy_lookup_when_an_exact_industry_match_al
          patch.object(ea.practus_history, "confirmed_clients_by_keyword_context") as mock_proxy, \
          patch.object(ea.ownership_classifier, "classify", return_value=ownership), \
          patch.object(ea.exa_search, "search_many", return_value="Some evidence text."), \
-         patch.object(ea.p2_case_study_matcher, "find_case_study_matches", return_value=[]), \
+         patch.object(ea.p2_case_study_matcher, "find_case_study_matches_embedded", return_value=[]), \
          patch.object(ea.p3_team_matcher, "find_team_matches", return_value=[]), \
          patch.object(ea.p3_external_sme_matcher, "find_external_sme_matches", return_value=[]), \
          patch.object(ea, "research", return_value="Some research finding."), \
@@ -972,7 +972,7 @@ def test_gather_setu_evidence_runs_the_three_lookups_concurrently():
         crm = ea.build_crm_structured(_deal(client_problem_statement="Cost visibility and control"))
 
     data_gaps: list[str] = []
-    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches", _blocking([])), \
+    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches_embedded", _blocking([])), \
          patch.object(ea.p2_case_study_matcher, "rerank_case_studies_with_llm", return_value=[]), \
          patch.object(ea.p2_case_study_matcher, "format_case_studies_as_evidence_text", return_value="p2 text"), \
          patch.object(ea.p3_team_matcher, "find_assigned_person_profile", return_value=None), \
@@ -997,7 +997,7 @@ def test_gather_setu_evidence_keeps_one_failing_lookup_from_sinking_the_others()
         crm = ea.build_crm_structured(_deal(client_problem_statement="Cost visibility and control"))
 
     data_gaps: list[str] = []
-    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches", side_effect=RuntimeError("setu down")), \
+    with patch.object(ea.p2_case_study_matcher, "find_case_study_matches_embedded", side_effect=RuntimeError("setu down")), \
          patch.object(ea.p3_team_matcher, "find_assigned_person_profile", return_value=None), \
          patch.object(ea.p3_team_matcher, "find_team_matches", return_value=[]), \
          patch.object(ea.p3_team_matcher, "rerank_matches_with_llm", return_value=[]), \

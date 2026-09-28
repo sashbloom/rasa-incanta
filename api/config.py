@@ -38,8 +38,14 @@ class Settings(BaseSettings):
     # Language model (Brick 2 onwards)
     anthropic_api_key: str = ""
     llm_model_actions: str = "claude-sonnet-5"
-    llm_model_extraction: str = "claude-haiku-4-5-20251001"  # mail key points
+    llm_model_extraction: str = "claude-haiku-4-5-20251001"  # mail key points, case-study context enrichment
     llm_model_icp: str = "claude-sonnet-5"  # ICP interpretation, research and Setu re-rank (the ICP bot's model)
+
+    # Voyage AI embeddings, used only to narrow Setu case studies to the few Claude actually
+    # reranks (api/icp/setu_embeddings.py). Without a key, that narrowing is skipped and the
+    # keyword-scored order is used instead -- the re-rank itself still runs.
+    voyage_api_key: str = ""
+    embedding_model: str = "voyage-4-lite"
 
     # ICP scoring (ported from the ICP bot). Exa powers its web research; without a key those
     # criteria become data gaps, as in the ICP bot. Results are cached per company.

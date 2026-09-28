@@ -35,7 +35,10 @@ class IcpSettings:
     anthropic_model_interpretation: str = "claude-sonnet-5"
     anthropic_model_narrative: str = "claude-sonnet-5"
     anthropic_model_research: str = "claude-sonnet-5"
+    anthropic_model_extraction: str = "claude-haiku-4-5-20251001"  # case-study context enrichment
     exa_api_key: str = ""
+    voyage_api_key: str = ""
+    embedding_model: str = "voyage-4-lite"
     zoho_url: str = ""
     setu_url: str = ""
     langfuse_public_key: str = ""
@@ -67,7 +70,10 @@ def from_settings(s: RasaSettings) -> IcpSettings:
         anthropic_model_interpretation=s.llm_model_icp,
         anthropic_model_narrative=s.llm_model_icp,
         anthropic_model_research=s.llm_model_icp,
+        anthropic_model_extraction=s.llm_model_extraction,
         exa_api_key=s.exa_api_key,
+        voyage_api_key=s.voyage_api_key,
+        embedding_model=s.embedding_model,
         zoho_url=pg_url(s.zoho_db),
         setu_url=pg_url(s.setu_db),
         langfuse_public_key=s.langfuse_public_key,

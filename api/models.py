@@ -286,6 +286,45 @@ class CompanyIcp(Timestamped, Base):
     error: Mapped[str | None] = mapped_column(Text)
 
 
+class SetuCaseStudyContext(Timestamped, Base):
+    """A Claude-generated 2-3 sentence context for one thin Setu case study (real content missing
+    or under 50 characters) -- generated once per exact source text and reused forever after,
+    api/icp/setu_embeddings.py.
+
+    Append-only, keyed by source_hash: `knowledge_chunks` case studies have no stable id
+    (CLAUDE.md), so identity here is a hash of the exact name/industry/service_line/content this
+    was generated from. A changed source produces a new hash and a new row rather than overwriting
+    anything; the row for the old hash is simply never looked up again."""
+
+    __tablename__ = "setu_case_study_contexts"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    source_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    case_study_name: Mapped[str] = mapped_column(String(300))  # for a human reading the table only
+    generated_context: Mapped[str] = mapped_column(Text)
+    model: Mapped[str] = mapped_column(String(100))
+
+
+class SetuCaseStudyEmbedding(Timestamped, Base):
+    """One Voyage embedding of one Setu case study's enriched text (name, industry, service line,
+    plus its own content or a SetuCaseStudyContext) -- api/icp/setu_embeddings.py. Looked up once
+    per deal or company scored and reused; with well under 100 case studies on file, retrieval is
+    a brute-force cosine-similarity scan in Python, not a vector index. Append-only, keyed by
+    (source_hash, model) -- NOT source_hash alone: two different models' vectors are not
+    comparable (different embedding spaces, sometimes different dimensions outright), so switching
+    EMBEDDING_MODEL must get its own row per case study rather than reusing, or colliding with, an
+    older model's."""
+
+    __tablename__ = "setu_case_study_embeddings"
+    __table_args__ = (UniqueConstraint("source_hash", "model", name="uq_setu_case_study_embeddings_hash_model"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    source_hash: Mapped[str] = mapped_column(String(64), index=True)
+    case_study_name: Mapped[str] = mapped_column(String(300))
+    model: Mapped[str] = mapped_column(String(100))
+    embedding: Mapped[list] = mapped_column(JSONType)
+
+
 class ContactPersona(Timestamped, Base):
     """One persona deep-dive of one contact from a deal's outreach log (api/persona/). Append-only,
     like company_icp: a run reuses the newest `ok` or `no_material` row younger than

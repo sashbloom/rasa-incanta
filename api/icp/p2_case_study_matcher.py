@@ -168,25 +168,22 @@ _RERANK_SCHEMA = {
 }
 
 
-def _case_study_catalog(matches: list[dict]) -> str:
-    """The full case-study library, formatted in a FIXED order (sorted by name) that does not
-    depend on any deal's keyword/industry/geography scoring. `matches` is effectively the whole
-    corpus at both call sites (find_case_study_matches()'s default limit is 100, well above the
-    real ~90 total) — so this text is byte-identical across every rerank call in a run, no matter
-    which deal or company triggered it, which is what makes it worth caching in the first place.
+def find_case_study_matches_embedded(*, problem_context: str, industry: str | None, geography: str | None = None,
+                                     limit: int = 5) -> list[dict]:
+    """find_case_study_matches() (unchanged — still keyword/industry/geography-scores every case
+    study on file) narrowed to the `limit` closest to `problem_context` by Voyage embedding
+    similarity (setu_embeddings.top_by_similarity()). This, not find_case_study_matches() directly,
+    is what reaches rerank_case_studies_with_llm() at both call sites (evidence_assembler.py's P2
+    step, engine/capability.py's capability_for()): a small, embedding-picked shortlist rather than
+    the whole ~90-study corpus.
 
-    Rasa Incanta addition: the ICP bot's own version of this call put the whole library straight
-    into the (deal-specific, uncached) prompt, on every single call — confirmed live, ~$18 of a
-    day's run on this one call, 5.5M uncached input tokens. `matches` is only re-sorted here, not
-    re-fetched, so a caller must still fetch the corpus itself (setu_db.fetch_case_studies() has no
-    ORDER BY — sorting here, not trusting DB row order, is what keeps this string byte-identical
-    from one call to the next)."""
-    ordered = sorted(matches, key=lambda m: m["name"])
-    lines = [f"{m['name']} (Industry: {m['industry'] or 'unknown'}, Service line: {m['service_line'] or 'unknown'}) "
-             f"— content: \"{m['content'][:500]}\"" for m in ordered]
-    return ("CASE STUDY LIBRARY (every Setu case study on file; read it once — the per-deal instructions "
-            "that follow tell you which of these are documented matches for THIS deal):\n"
-            + "\n".join(f"{i + 1}. {line}" for i, line in enumerate(lines)))
+    VOYAGE_API_KEY unset, or a Voyage/Claude enrichment call failing, falls back to the top
+    keyword-scored candidates untouched — the ranking never breaks without it, only the semantic
+    narrowing is skipped; see setu_embeddings.top_by_similarity()'s own docstring."""
+    from api.icp import setu_embeddings
+
+    scored = find_case_study_matches(problem_context=problem_context, industry=industry, geography=geography)
+    return setu_embeddings.top_by_similarity(scored, problem_context=problem_context, limit=limit)
 
 
 def rerank_case_studies_with_llm(matches: list[dict], *, problem_context: str, limit: int = 3) -> list[dict]:
@@ -200,10 +197,11 @@ def rerank_case_studies_with_llm(matches: list[dict], *, problem_context: str, l
     (industry closeness matters more than raw keyword overlap, and this
     task requires judging that, not just counting hits).
 
-    The library itself (name, industry, service line, content) goes in a cached system block
-    (_case_study_catalog(), byte-identical every call); only the deal's own industry/geography
-    matches, its deterministic ranking, and its problem text — all genuinely different per call —
-    go in the uncached user prompt. See _cached_system_blocks()'s `extra_cached` docstring.
+    `matches` is normally find_case_study_matches_embedded()'s small, per-deal shortlist (5 by
+    default), not the whole corpus — there is no longer a large, stable "library" here worth its
+    own cache_control block (that would be a cache WRITE with no read on every call, since the
+    shortlist differs by deal; see p3_external_sme_matcher.py's rerank for a call site that still
+    genuinely has one). Sends the shortlist's own content straight in the prompt.
 
     Falls back to the deterministic ranking (matches[:limit]) on ANY
     failure or hallucinated name, same resilience pattern as
@@ -213,43 +211,38 @@ def rerank_case_studies_with_llm(matches: list[dict], *, problem_context: str, l
 
     from .anthropic_client import generate_structured_narrative
 
-    catalog = _case_study_catalog(matches)
-    industry_hits = [m["name"] for m in matches if m["industry_match"]]
-    geography_hits = [m["name"] for m in matches if m.get("geography_match")]
-    ranked = [m["name"] for m in sorted(matches, key=lambda m: m["score"], reverse=True) if m["score"] > 0]
+    candidate_lines = []
+    for m in matches:
+        parts = [f"{m['name']} (Industry: {m['industry'] or 'unknown'}, Service line: {m['service_line'] or 'unknown'})"]
+        if m["industry_match"]:
+            parts.append("documented industry match for this deal")
+        if m.get("geography_match"):
+            parts.append("documented geography match for this deal")
+        parts.append(f"content: \"{m['content'][:500]}\"")
+        candidate_lines.append(" — ".join(parts))
 
-    prompt = f"""From the case study library above, pick and ORDER the {limit} most relevant to this \
-client's problem, closest match FIRST. Follow icp-skill.md's own priority exactly: (1) same problem AND \
-same/adjacent industry ranks highest, (2) same problem but a different industry ranks next, (3) an \
-adjacent problem but the same industry ranks next, (4) generic capability with no specific case ranks \
-last. Within the same priority tier, a documented geography match is a secondary tiebreaker — same \
-problem AND same/adjacent industry AND same geography should rank above the same problem+industry match \
-with no geography overlap — but never let geography alone outrank a genuinely closer industry/problem \
-match. Use ONLY the evidence given — never invent a detail or an impact number where none is stated, and \
-never select a name that isn't in the library. Picking fewer than {limit} is better than padding with a \
+    prompt = f"""From the case studies below, pick and ORDER the {limit} most relevant to this client's \
+problem, closest match FIRST. Follow icp-skill.md's own priority exactly: (1) same problem AND same/\
+adjacent industry ranks highest, (2) same problem but a different industry ranks next, (3) an adjacent \
+problem but the same industry ranks next, (4) generic capability with no specific case ranks last. Within \
+the same priority tier, a documented geography match is a secondary tiebreaker — same problem AND same/\
+adjacent industry AND same geography should rank above the same problem+industry match with no geography \
+overlap — but never let geography alone outrank a genuinely closer industry/problem match. Use \
+ONLY the evidence given — never invent a detail or an impact number where none is stated, and never \
+select a name that isn't in the list below. Picking fewer than {limit} is better than padding with a \
 weak or irrelevant match.
 
-FOR THIS DEAL:
-- Documented industry match: {", ".join(industry_hits) or "none"}
-- Documented geography match: {", ".join(geography_hits) or "none"}
-- Deterministic keyword/industry/geography ranking, best first (a starting point, not a mandate — \
-re-order within icp-skill.md's priority above using the library's actual content): {", ".join(ranked) or "none"}
+CLIENT'S PROBLEM / CONTEXT: {problem_context[:1500]}
 
-CLIENT'S PROBLEM / CONTEXT: {problem_context[:1500]}"""
+CASE STUDIES:
+{chr(10).join(f"{i + 1}. {line}" for i, line in enumerate(candidate_lines))}"""
 
     try:
-        # Raised 2000->4000 proactively: this call now reasons over
-        # effectively the WHOLE case-study corpus (~90, not a small
-        # pre-filtered set — see find_case_study_matches()'s docstring),
-        # a bigger reasoning load than P3's team rerank, which already
-        # confirmed live (2/2 real runs) that 2000 wasn't enough for a
-        # 10-candidate comparison. Same "prompt/reasoning load grew, budget
-        # needs raising" pattern as every other narrative call this project
-        # has hit -- this step already degrades gracefully to the
-        # deterministic ranking on failure, but that silently loses the
-        # whole benefit of reranking, not just a smaller one.
+        # These are already the few (5, by default) candidates find_case_study_matches_embedded()
+        # picked, not the whole corpus, so 4000 has comfortable headroom rather than being the
+        # bare minimum a ~90-candidate comparison needed before that narrowing existed.
         data = generate_structured_narrative(prompt, _RERANK_SCHEMA, max_tokens=4000, label="p2_case_study_rerank",
-                                             include_skill_reference=False, extra_cached=catalog)
+                                             include_skill_reference=False)
     except Exception as exc:
         logger.warning("P2 case-study LLM rerank FAILED: %s — falling back to the deterministic ranking.", exc)
         return matches[:limit]

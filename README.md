@@ -91,9 +91,16 @@ The **Sources** page shows each source's status from the latest run.
   scores every company (several minutes each, four at a time, so expect hours for 83); later runs
   reuse scores for 28 days and contact research for 56 days (`PERSONA_CACHE_DAYS`).
 - **Langfuse:** set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_BASEURL` to the shared
-  Practus project's values. Every Claude and Exa call is traced, tagged `rasa-incanta`, one session
-  per run (`rasa-incanta:run:<id>`), with token and cache counts and Exa's dollar cost. Unset means
-  no tracing and no error.
+  Practus project's values. Every Claude, Exa and Voyage call is traced, tagged `rasa-incanta`, one
+  session per run (`rasa-incanta:run:<id>`), with token and cache counts and each provider's dollar
+  cost. Unset means no tracing and no error.
+- **Case-study embeddings:** set `VOYAGE_API_KEY`. Narrows the ~90 Setu case studies to the 5
+  closest to each deal's problem (by embedding similarity) before Claude reranks them, instead of
+  reranking the whole corpus every time. Unset means that narrowing is skipped and the re-rank runs
+  over the whole corpus, same as before — nothing breaks, it just costs more. The first run
+  embeds every case study once (a couple of small Voyage calls, plus a Claude Haiku call for any
+  case study with little or no text of its own); results are cached forever and only redone if a
+  case study's own text changes or `EMBEDDING_MODEL` is switched.
 
 Rough cost per run: one re-rank and one NBA call per deal, one small key-points call per deal with
 mail, a few large calls plus Exa searches per company the first time it is ICP-scored, and four
@@ -101,10 +108,11 @@ Exa searches plus one Claude call per contact the first time they are researched
 share one cached system prefix (instructions, Ideas Treasury, compose rules); only the deal's
 context card varies. With Mahak's Ideas Treasury (`api/engine/reference/ideas_treasury.md`) the
 prefix is about 2,000 tokens, past Sonnet 5's 1024-token caching minimum, so every NBA call after
-the first in a run reads it from cache. The Setu case-study and external-SME reranks (inside ICP
-scoring) do the same with their library of case studies or partner profiles: the whole library is
-one cached block, byte-identical every call, and only each deal's own hints and problem text are
-sent fresh — confirmed live this was ~$18/day of an 87-deal run's cost before caching.
+the first in a run reads it from cache. The Setu external-SME re-rank (inside ICP scoring) does the
+same with its whole partner-profile library: one cached block, byte-identical every call, only each
+deal's own hints and problem text sent fresh. The case-study re-rank instead narrows to 5 by
+embedding similarity before Claude ever sees the corpus (above) — confirmed live this was ~$18/day
+of an 87-deal run's cost when it reranked the whole ~90-study corpus, uncached, on every call.
 
 ## Deploy on Railway
 
@@ -116,7 +124,8 @@ sent fresh — confirmed live this was ~$18/day of an 87-deal run's cost before 
 4. In the service's Variables set every name in `.env.example` that applies. At minimum:
    - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}`
    - `ENVIRONMENT` = `production`
-   - `ANTHROPIC_API_KEY`, `EXA_API_KEY` (research), and the three `LANGFUSE_*` values (tracing)
+   - `ANTHROPIC_API_KEY`, `EXA_API_KEY` (research), `VOYAGE_API_KEY` (case-study embeddings), and
+     the three `LANGFUSE_*` values (tracing)
 5. The healthcheck is `/health`. Every deploy runs migrations before the app starts, and a failed
    migration stops the boot, so Railway keeps the last good deploy.
 

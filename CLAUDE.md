@@ -89,12 +89,27 @@ account-fit and stakeholder logic is copied into this codebase, not called over 
   `employees`, plus `knowledge_chunks` types `skill_profile`, `resume`, `partner_profile`.
   `engine/capability.py` uses the ICP bot's P2 matcher and its Claude re-rank (one call per deal);
   if the re-rank fails it falls back to our strict match (same industry, or rare shared terms with
-  keyword score >= 0.5), never to the re-rank's own zero-score fallback. The P2 case-study and P3
-  external-SME rerank prompts (`api/icp/p2_case_study_matcher.py`, `p3_external_sme_matcher.py`)
-  split the whole Setu library (byte-identical every call, sorted by name) into a cached system
-  block from the deal-specific hints and problem text, which stay in the uncached user prompt — see
-  `anthropic_client._cached_system_blocks()`'s `extra_cached`. SMEs come from the P3 team
-  matcher, active people only, no extra call.
+  keyword score >= 0.5), never to the re-rank's own zero-score fallback.
+  - **Case studies:** `p2_case_study_matcher.find_case_study_matches_embedded()` keyword-scores
+    the whole corpus as before, then narrows it to 5 by Voyage embedding cosine similarity
+    (`api/icp/embeddings.py`, `EMBEDDING_MODEL`, default `voyage-4-lite`) before the Claude
+    re-rank ever sees it — `api/icp/setu_embeddings.py`. A case study whose own text is missing or
+    under 50 characters gets a 2-3 sentence Claude Haiku-written context first
+    (`LLM_MODEL_EXTRACTION`); that gets embedded instead of the raw sparse fields. Both the
+    generated context and the embedding are cached forever, append-only, keyed by a hash of the
+    exact source text (`setu_case_study_contexts`, `setu_case_study_embeddings` — no stable id
+    upstream, so a changed source is a new row, not an update); the embedding is ALSO keyed by
+    `EMBEDDING_MODEL`, so switching models re-embeds rather than comparing across embedding
+    spaces. `VOYAGE_API_KEY` unset, or any failure, falls back to the keyword-scored order — the
+    re-rank still runs, just over the whole corpus again.
+  - **External SMEs:** `p3_external_sme_matcher.py`'s rerank still gets the WHOLE partner-profile
+    corpus (no embedding narrowing built for it), so its prompt splits that library (byte-identical
+    every call, sorted by name) into a cached system block from the deal-specific hints and problem
+    text, which stay in the uncached user prompt — see `anthropic_client._cached_system_blocks()`'s
+    `extra_cached`. `p2_case_study_matcher.py`'s OWN rerank dropped this same trick once embedding
+    narrowing gave it a small, deal-specific shortlist instead — a cached block only pays off when
+    it's read back, and a 5-item shortlist that differs every call never is.
+  - SMEs (internal team) come from the P3 team matcher, active people only, no extra call.
 - **Conversation from Zoho:** `reachout_tracker` (the deal's outreach log) gives every in-scope
   deal a dated touch with the person met, designation, role and remarks, read in `sources/zoho.py`.
   Teams / in-person / phone clear `no_call_logged`. Emails and phone numbers are scrubbed from

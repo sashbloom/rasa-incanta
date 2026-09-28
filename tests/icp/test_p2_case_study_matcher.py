@@ -182,22 +182,14 @@ def test_rerank_case_studies_with_llm_falls_back_when_it_hallucinates_a_name():
 
 # ---------------------------------------------------------------- prompt caching (the catalog block)
 
-def test_the_catalog_is_byte_identical_regardless_of_this_deals_scoring():
-    """The whole point of caching it: two deals with the same case-study corpus but different
-    per-deal scores/order must produce the exact same catalog text."""
-    a = [_match("Patisserie & Bakes", industry="Food Processing", score=3.0, industry_match=True),
-         _match("Steel Major", industry="Steel", score=0.0)]
-    b = [_match("Steel Major", industry="Steel", score=5.0, industry_match=True),
-         _match("Patisserie & Bakes", industry="Food Processing", score=1.0)]  # same two, reordered/rescored
-
-    assert cm._case_study_catalog(a) == cm._case_study_catalog(b)
-    assert cm._case_study_catalog(a).index("Patisserie & Bakes") < cm._case_study_catalog(a).index("Steel Major")  # sorted by name
-
-
-def test_rerank_sends_the_catalog_as_a_cached_block_and_hints_not_content_in_the_prompt():
+def test_rerank_sends_each_candidates_own_content_uncached():
+    """Superseded by embedding-based narrowing (find_case_study_matches_embedded): `matches` here
+    is always a small, deal-specific shortlist now, so there's no stable whole-corpus block left
+    worth its own cache_control — see p3_external_sme_matcher's rerank for a call site that still
+    has one."""
     matches = [_match("Patisserie & Bakes", industry="Food Processing", content="Working capital controls.",
-                      score=3.0, industry_match=True, geography_match=True),
-              _match("Steel Major", industry="Steel", content="Cost audit in India.", score=0.0)]
+                      industry_match=True, geography_match=True),
+              _match("Steel Major", industry="Steel", content="Cost audit in India.")]
 
     with patch(
         "api.icp.anthropic_client.generate_structured_narrative",
@@ -206,15 +198,22 @@ def test_rerank_sends_the_catalog_as_a_cached_block_and_hints_not_content_in_the
         cm.rerank_case_studies_with_llm(matches, problem_context="Sula Wines growth", limit=3)
 
     kwargs = mock_generate.call_args.kwargs
-    catalog = kwargs["extra_cached"]
-    assert "Patisserie & Bakes" in catalog and "Working capital controls." in catalog  # library goes in the cached block
-    assert "Steel Major" in catalog and "Cost audit in India." in catalog
-
+    assert "extra_cached" not in kwargs  # no wasted cache-write for a list that differs every call
     prompt = mock_generate.call_args.args[0]
-    assert "Working capital controls." not in prompt and "Cost audit in India." not in prompt  # content isn't repeated
-    assert "Documented industry match: Patisserie & Bakes" in prompt
-    assert "Documented geography match: Patisserie & Bakes" in prompt
-    assert "ranking, best first" in prompt and "Patisserie & Bakes" in prompt.split("ranking, best first")[1].split("\n")[0]
-    assert "Steel Major" not in prompt.split("ranking, best first")[1].split("\n")[0]  # zero-score: not in the hint
-    assert "Sula Wines growth" in prompt  # the deal's own problem text is still there, uncached
+    assert "Working capital controls." in prompt and "Cost audit in India." in prompt
+    assert "documented industry match for this deal" in prompt and "documented geography match for this deal" in prompt
+    assert "Sula Wines growth" in prompt
     assert kwargs["include_skill_reference"] is False
+
+
+# ---------------------------------------------------------------- embedding-based narrowing
+
+def test_find_case_study_matches_embedded_narrows_the_keyword_scored_corpus(monkeypatch):
+    scored = [_match("Patisserie & Bakes", score=1.0), _match("Steel Major", score=0.0)]
+    monkeypatch.setattr(cm, "find_case_study_matches", lambda **kw: scored)
+
+    with patch("api.icp.setu_embeddings.top_by_similarity", return_value=[scored[0]]) as mock_top:
+        result = cm.find_case_study_matches_embedded(problem_context="Sula Wines growth", industry="Wine", limit=5)
+
+    assert result == [scored[0]]
+    mock_top.assert_called_once_with(scored, problem_context="Sula Wines growth", limit=5)

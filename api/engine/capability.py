@@ -1,17 +1,16 @@
 """The `capability` signal: the Setu case studies closest to a deal, as evidence an NBA can cite.
 
-Scoring is the ICP bot's P2 case-study matcher (`p2_case_study_matcher.find_case_study_matches`):
-2 for the same industry, 1 for the deal's geography named in the case, plus inverse-document-
-frequency weighted keyword hits over title and content. Keywords come from multi-word capitalised
-phrases, so the deal name and company lead the query text.
+The primary path calls the ICP bot's P2 case-study matcher, narrowed to a handful of candidates
+by embedding similarity before its one Claude re-rank per deal
+(`p2_case_study_matcher.find_case_study_matches_embedded`, `rerank_case_studies_with_llm`).
 
-The ICP bot sends every case study to a Claude re-rank, because the best proof can be a
-conceptual analogy with no shared words. That costs one Claude call per deal per run, so it is
-not done here yet. Instead a case study counts only if it shares the deal's industry, or shares
-terms rare enough to mean something: keyword score of at least MIN_KEYWORD_SCORE, i.e. a term
-found in at most two case studies. On the real corpus "transformation" appears in 59 of 90 case
-studies, so a match on it alone is noise, not proof. Geography alone never counts. No qualifying
-case study means the `no_setu_match` gap.
+`_deterministic_cases` below is the fallback used only when the re-rank itself fails or returns
+nothing usable: 2 for the same industry, 1 for the deal's geography named in the case, plus
+inverse-document-frequency weighted keyword hits over title and content, counting a case only if
+it shares the deal's industry or shares terms rare enough to mean something (keyword score of at
+least MIN_KEYWORD_SCORE, i.e. a term found in at most two case studies — on the real corpus
+"transformation" appears in 59 of 90 case studies, so a match on it alone is noise, not proof).
+Geography alone never counts there either. No qualifying case study means the `no_setu_match` gap.
 """
 from __future__ import annotations
 
@@ -149,7 +148,7 @@ def capability_for(deal: ZohoDeal, corpus: list[CaseStudy], *, find_cases=None, 
     from api.icp import p2_case_study_matcher as p2
     from api.icp import p3_team_matcher as p3
 
-    find_cases = find_cases or p2.find_case_study_matches
+    find_cases = find_cases or p2.find_case_study_matches_embedded
     rerank = rerank or p2.rerank_case_studies_with_llm
     find_team = find_team or p3.find_team_matches
 

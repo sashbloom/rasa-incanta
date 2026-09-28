@@ -253,7 +253,7 @@ def gather_setu_evidence(
             return []
         problem_context = " / ".join(p for p in (problem, extra_keyword_context) if p)
         try:
-            candidates = p2_case_study_matcher.find_case_study_matches(
+            candidates = p2_case_study_matcher.find_case_study_matches_embedded(
                 problem_context=problem_context, industry=industry, geography=geography,
             )
             matches = p2_case_study_matcher.rerank_case_studies_with_llm(candidates, problem_context=problem_context)
