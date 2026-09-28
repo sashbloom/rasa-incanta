@@ -37,6 +37,7 @@ from __future__ import annotations
 import contextvars
 import logging
 from contextlib import contextmanager
+from functools import lru_cache
 from typing import Any, Callable, Iterator, TypeVar
 
 from api.icp.compat import get_settings
@@ -83,6 +84,74 @@ def propagate_context(fn: _F) -> _F:
         return ctx.run(fn, *args, **kwargs)
 
     return _wrapped  # type: ignore[return-value]
+
+
+@lru_cache(maxsize=1)
+def _init_client() -> None:
+    """Rasa Incanta: build the one Langfuse client from OUR settings, host included. The SDK's own
+    get_client() reads LANGFUSE_PUBLIC_KEY/SECRET_KEY/HOST from os.environ: it never sees
+    LANGFUSE_BASEURL (the Practus name for the host) and, locally, never sees .env at all, since
+    pydantic-settings reads .env into Settings only. Once built, get_client() returns this one."""
+    if _settings.langfuse_public_key and _settings.langfuse_secret_key:
+        from langfuse import Langfuse
+
+        Langfuse(public_key=_settings.langfuse_public_key, secret_key=_settings.langfuse_secret_key,
+                 host=_settings.langfuse_baseurl)
+
+
+def _client():
+    _init_client()
+    from langfuse import get_client
+
+    return get_client()
+
+
+@contextmanager
+def observe_search(name: str, *, input: Any, provider: str = "exa", tags: list[str] | None = None,
+                   ) -> Iterator[Callable[..., None]]:
+    """Rasa Incanta: the same open-around-the-call span as observe_generation() below, for a paid
+    search API call (Exa). Recorded as a generation so Langfuse shows its dollar cost beside the
+    Claude calls of the same session: `finish(output=..., cost=<dollars>)`. Never raises and never
+    blocks the call it wraps."""
+    if not TRACING_ENABLED:
+        yield lambda **_: None
+        return
+    try:
+        client = _client()
+        root = client.start_span(name=name, input=input)
+        root.update_trace(name=name, session_id=current_run_id.get(), tags=[SERVICE_TAG, provider, *(tags or [])])
+        generation = root.start_generation(name=name, input=input, model=provider)
+    except Exception as exc:
+        logger.warning("Langfuse span could not be opened for %r — continuing untraced: %s", name, exc)
+        yield lambda **_: None
+        return
+
+    captured: dict[str, Any] = {}
+
+    def finish(*, output: Any = None, cost: float | None = None) -> None:
+        captured["output"], captured["cost"] = output, cost
+
+    try:
+        yield finish
+    finally:
+        try:
+            cost = captured.get("cost")
+            generation.update(output=captured.get("output"),
+                              cost_details={"total": float(cost)} if cost is not None else None)
+            generation.end()
+            root.end()
+        except Exception as exc:
+            logger.warning("Langfuse span could not be closed for %r: %s", name, exc)
+
+
+def flush() -> None:
+    """Send buffered traces now (the end of a run). A no-op when tracing is off; never raises."""
+    if not TRACING_ENABLED:
+        return
+    try:
+        _client().flush()
+    except Exception as exc:
+        logger.warning("Langfuse flush failed: %s", exc)
 
 
 def usage_details(usage: Any) -> dict[str, int] | None:
@@ -159,9 +228,7 @@ def observe_generation(
 
     root = generation = None
     try:
-        from langfuse import get_client
-
-        client = get_client()
+        client = _client()
         root = client.start_span(name=name, input=input)
         root.update_trace(
             name=name, session_id=session_id or current_run_id.get(), tags=[SERVICE_TAG, *(tags or [])],
@@ -211,9 +278,7 @@ def record_generation(
         return
 
     try:
-        from langfuse import get_client
-
-        client = get_client()
+        client = _client()
         root = client.start_span(name=name)
         root.update_trace(
             name=name, session_id=session_id or current_run_id.get(), tags=[SERVICE_TAG, *(tags or [])],

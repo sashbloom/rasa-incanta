@@ -12,6 +12,7 @@ from typing import Any
 import anthropic
 from pydantic import BaseModel
 
+from api.icp import tracing
 from api.sources.outlook import Mail
 
 logger = logging.getLogger(__name__)
@@ -49,9 +50,13 @@ def key_points(client: Any, model: str, deal_name: str, mails: list[Mail]) -> di
     if client is None or not mails:
         return {}
     try:
-        response = client.messages.parse(model=model, max_tokens=2000, system=SYSTEM,
-                                         messages=[{"role": "user", "content": _prompt(deal_name, mails)}],
-                                         output_format=KeyPoints)
+        messages = [{"role": "user", "content": _prompt(deal_name, mails)}]
+        with tracing.observe_generation(f"mail key points: {deal_name}", model=model, input=messages,
+                                        tags=["mail"]) as finish:
+            response = client.messages.parse(model=model, max_tokens=2000, system=SYSTEM, messages=messages,
+                                             output_format=KeyPoints)
+            finish(output=getattr(getattr(response, "parsed_output", None), "model_dump", lambda: None)(),
+                   usage=getattr(response, "usage", None))
     except (anthropic.APIStatusError, anthropic.APIConnectionError) as exc:
         logger.warning("Mail key points failed for %s: %s", deal_name, type(exc).__name__)
         return {}

@@ -29,7 +29,8 @@ SEGMENTS = (
     ("proof", "Proof", "capability", (Gap.NO_SETU_MATCH,)),
     ("deal_state", "Deal state", "deal_state", ()),
 )
-SOURCE_LABEL = {"zoho": "Zoho", "readai": "Call", "outlook": "Mail", "setu": "Setu", "icp": "ICP"}
+SOURCE_LABEL = {"zoho": "Zoho", "readai": "Call", "outlook": "Mail", "setu": "Setu", "icp": "ICP",
+                "persona": "Web research"}
 
 
 def visible_deals() -> Select:

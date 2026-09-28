@@ -102,6 +102,29 @@ def test_cache_reuses_for_four_weeks_and_never_reuses_failures(migrated):
         assert s.scalar(select(CompanyIcp).where(CompanyIcp.status == "scored")).result["score"]  # full result kept
 
 
+def test_once_exa_is_set_a_score_made_without_it_is_redone(migrated):
+    with get_sessionmaker()() as s:
+        key = icp_signal.company_key("Northwind Foods Pvt Ltd")
+        icp_signal.record(s, "Northwind Foods Pvt Ltd", NOW - timedelta(days=3), result=fake_score(provisional=True))
+        s.commit()
+        assert icp_signal.fresh_icp(s, key, NOW, 28) is not None  # still reused while Exa is off
+        assert icp_signal.fresh_icp(s, key, NOW, 28, require_exa=True) is None  # rescored once the key is set
+        icp_signal.record(s, "Northwind Foods Pvt Ltd", NOW - timedelta(days=1), result=fake_score(), exa_research=True)
+        s.commit()
+        assert icp_signal.fresh_icp(s, key, NOW, 28, require_exa=True).result["exa_research"] is True
+
+
+def test_a_run_with_exa_rescores_companies_scored_without_it(all_sources):
+    ids = ["zoho.stage", "icp.recommendation"]
+    with get_sessionmaker()() as s:
+        run(s, all_sources, ids)  # settings() has no EXA_API_KEY
+        assert all_sources["calls"]["icp"] == 2
+        run(s, all_sources, ids, settings_overrides={"exa_api_key": "exa-key"})
+        assert all_sources["calls"]["icp"] == 4  # both companies rescored, now with research
+        run(s, all_sources, ids, settings_overrides={"exa_api_key": "exa-key"})
+        assert all_sources["calls"]["icp"] == 4  # and those scores are reused
+
+
 # ---------------------------------------------------------------- capability with the re-rank
 
 CORPUS = [CaseStudy(name="Patisserie & Bakes", content="Working capital controls.", industry="Food Processing"),
@@ -168,14 +191,14 @@ def all_sources(migrated):
     return {"fetch_mail": fetch_mail, "capability_fn": capability, "score_company_fn": score, "calls": calls}
 
 
-def run(session, src, reply_ids, **kw):
+def run(session, src, reply_ids, settings_overrides=None, **kw):
     from api.engine.run import run_week
     from api.sources.setu import SetuResult
 
     reply = claude_response(dict(load("claude/nba_reply.json"), evidence_ids=reply_ids))
     points = SimpleNamespace(parsed_output=KeyPoints(mails=[MailPoints(index=1, key_points=["CFO wants phasing by 30 Sep"])]),
                              stop_reason="end_turn", content=[])
-    return run_week(session, settings(), now=NOW, fetch=zoho_fetch(), fetch_setu=lambda s: SetuResult(case_studies=CORPUS),
+    return run_week(session, settings(**(settings_overrides or {})), now=NOW, fetch=zoho_fetch(), fetch_setu=lambda s: SetuResult(case_studies=CORPUS),
                     fetch_mail=src["fetch_mail"], capability_fn=src["capability_fn"], score_company_fn=src["score_company_fn"],
                     llm_client=FakeClaude(points, reply), deal_zoho_id="598723000011234001", **kw)
 

@@ -22,7 +22,7 @@ export type RunView = {
   finished_at: string | null
   error: string | null
   stats: {
-    phase?: 'pull' | 'mail' | 'capability' | 'icp' | 'cards' | 'nba' | 'done'
+    phase?: 'pull' | 'mail' | 'capability' | 'icp' | 'persona' | 'cards' | 'nba' | 'done'
     sources?: Record<string, string>
     deals?: number
     capability_done?: number
@@ -30,6 +30,9 @@ export type RunView = {
     icp_to_score?: number
     icp_done?: number
     icp_cached?: number
+    persona_to_do?: number
+    persona_done?: number
+    persona_cached?: number
     nba_to_draft?: number
     nba_done?: number
     nba_created?: number

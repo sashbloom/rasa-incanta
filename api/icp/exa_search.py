@@ -36,6 +36,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
+from api.icp import tracing
 from api.icp.compat import get_settings
 
 logger = logging.getLogger(__name__)
@@ -56,13 +57,23 @@ def _headers() -> dict:
 
 
 def _post(body: dict, *, timeout: float) -> dict:
-    try:
-        response = httpx.post(_SEARCH_URL, headers=_headers(), json=body, timeout=timeout)
-    except httpx.HTTPError as exc:
-        raise ExaError(f"Exa request failed: {exc}") from exc
-    if response.status_code != 200:
-        raise ExaError(f"Exa returned {response.status_code}: {response.text[:500]}")
-    return response.json()
+    # Rasa Incanta: every Exa call is traced in Langfuse with its dollar cost (tracing.observe_search).
+    headers = _headers()
+    trace_input = {"query": body.get("query"), "type": body.get("type"), "numResults": body.get("numResults")}
+    with tracing.observe_search(f"exa.search ({body.get('type')})", input=trace_input) as finish:
+        try:
+            response = httpx.post(_SEARCH_URL, headers=headers, json=body, timeout=timeout)
+        except httpx.HTTPError as exc:
+            finish(output={"error": type(exc).__name__})
+            raise ExaError(f"Exa request failed: {exc}") from exc
+        if response.status_code != 200:
+            finish(output={"error": f"HTTP {response.status_code}"})
+            raise ExaError(f"Exa returned {response.status_code}: {response.text[:500]}")
+        data = response.json()
+        finish(output={"results": [r.get("url") for r in data.get("results") or []],
+                       "structured": bool((data.get("output") or {}).get("content"))},
+               cost=(data.get("costDollars") or {}).get("total"))
+    return data
 
 
 def search_and_synthesize(

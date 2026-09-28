@@ -2,6 +2,9 @@
 
 A company is scored once and the result reused for ICP_CACHE_DAYS (CLAUDE.md: 4 weeks). Rows in
 `company_icp` are append-only; failures are recorded but never reused, so they retry next run.
+Each row records whether Exa research was available (`result.exa_research`). Once EXA_API_KEY is
+set, a score made without it is not reused: those scores had every web-research criterion as a
+data gap (usually Provisional, Gate 7), so the company is rescored with research.
 
 account_fit: the recommendation, both lenses (with group sub-verdicts), every fired gate, and
 each criterion with evidence (score, label, trimmed rationale). stakeholder: authority (C1) and
@@ -29,15 +32,16 @@ def company_key(name: str | None) -> str:
     return normalize_for_matching(name or "") or (name or "").strip().lower()
 
 
-def fresh_icp(session: Session, key: str, now: datetime, days: int) -> CompanyIcp | None:
-    """The newest reusable scoring of this company younger than `days`, if any."""
+def fresh_icp(session: Session, key: str, now: datetime, days: int, *, require_exa: bool = False) -> CompanyIcp | None:
+    """The newest reusable scoring of this company younger than `days`, if any. With
+    `require_exa`, a scoring made without Exa research does not count."""
     cutoff = now - timedelta(days=days)
     for row in session.scalars(select(CompanyIcp).where(CompanyIcp.company_key == key)
                                .order_by(CompanyIcp.computed_at.desc())):
         computed = row.computed_at if row.computed_at.tzinfo else row.computed_at.replace(tzinfo=timezone.utc)
         if computed < cutoff:
             return None
-        if row.status in REUSABLE:
+        if row.status in REUSABLE and (not require_exa or (row.result or {}).get("exa_research")):
             return row
     return None
 
@@ -109,7 +113,7 @@ def signals(result: CompanyScore, computed_at: datetime) -> tuple[dict, dict]:
 
 
 def record(session: Session, company_name: str, computed_at: datetime, result: CompanyScore | None = None,
-           error: str | None = None) -> CompanyIcp:
+           error: str | None = None, exa_research: bool = False) -> CompanyIcp:
     """Append one scoring (or failure) to company_icp."""
     if result is None:
         row = CompanyIcp(company_key=company_key(company_name), company_name=company_name, computed_at=computed_at,
@@ -118,7 +122,7 @@ def record(session: Session, company_name: str, computed_at: datetime, result: C
         account_fit, stakeholder = signals(result, computed_at)
         full = {"interpretations": {k: v.model_dump(mode="json") for k, v in result.interpretations.items()},
                 "score": result.score.model_dump(mode="json") if result.score else None,
-                "stop_reason": result.stop_reason}
+                "stop_reason": result.stop_reason, "exa_research": exa_research}
         row = CompanyIcp(company_key=company_key(company_name), company_name=company_name, computed_at=computed_at,
                          status=result.status, account_fit=account_fit, stakeholder=stakeholder, result=full,
                          data_gaps=list(result.bundle.data_gaps))

@@ -5,12 +5,21 @@ mail excerpts from Brick 3), never whole mailboxes or transcripts. The model mus
 fact ids; a draft that cites nothing, cites a fact that is not on the card, or breaks
 the length rules gets one retry with the problems spelled out, and is dropped after
 that. No evidence means no NBA.
+
+Prompt caching: everything that is the same for every deal (the instructions, the Ideas Treasury
+when one is loaded, and the compose rules) is one system block marked for Anthropic's prompt cache,
+and only the deal's context card goes after it. The run drafts one deal first so the rest read the
+cache instead of each writing it. The block must stay byte-identical across calls: nothing per
+deal, per run or per day may be interpolated into it.
 """
 from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Literal
 
 import anthropic
@@ -19,6 +28,7 @@ from pydantic import BaseModel
 from api.domain.gaps import gap_copy
 from api.domain.nba_rules import MAX_ACTION_WORDS, MAX_WHY_NOW_WORDS, check_nba
 from api.engine.context import SIGNALS, CardContent
+from api.icp import tracing
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +41,7 @@ class NbaDraft(BaseModel):
     why_now: str
     evidence_ids: list[str]
     effort: Literal["low", "medium", "high"]
+    treasury_ref: str | None = None
 
 
 @dataclass
@@ -46,13 +57,13 @@ class NbaResult:
         return self.draft is not None
 
 
-SYSTEM_PROMPT = f"""You recommend next best actions for Practus business development. Practus is a consulting firm; its partners and engagement leads work open opportunities from first prospect to negotiated proposal.
+SYSTEM_PROMPT = """You recommend next best actions for Practus business development. Practus is a consulting firm; its partners and engagement leads work open opportunities from first prospect to negotiated proposal.
 
 For the deal you are given, write the single most useful action the deal team can take this week.
 
 The context comes in five signals, each a list of sourced facts:
 - account_fit: the ICP assessment of the company (recommendation, client and Practus lenses, gates, criteria). Use it to judge how hard to push; it informs the objective but does not dictate it.
-- stakeholder: who holds authority and how warm the relationship is.
+- stakeholder: who holds authority and how warm the relationship is, plus web research on the person in the outreach log (their role, public facts, a conversation hook).
 - conversation: the Zoho outreach log, Read.ai meetings and Outlook mail, newest first.
 - capability: Practus case studies that fit (with why) and Practus SMEs to bring in.
 - deal_state: Zoho stage, days in stage, last update, amount, problem statements.
@@ -62,17 +73,58 @@ Objectives:
 - unblock: resolve an objection or a stakeholder gap that is holding it up.
 - reframe: address a higher-priority problem the client has raised.
 - nurture: keep an on-hold client engaged so the conversation resumes rather than restarts.
-- re_engage: reactivate a deal that has gone quiet.
+- re_engage: reactivate a deal that has gone quiet."""
 
-Rules:
+COMPOSE_RULES = f"""Rules:
 - Use only the facts provided. Every claim in the action and the why-now must rest on at least one fact, and evidence_ids must list the ids of those facts exactly as given. Prefer evidence from more than one signal when the facts support it.
 - The company is exactly the one on the Zoho record. Only name people who appear in the facts; never suggest going to a more senior or different contact.
+- The one exception is Practus's own people named in the Ideas Treasury (Venkat, Deepak, Vamesh, Vivek, Arun, Bimal): an action may bring them in. Client-side people still come only from the facts.
 - Cite a case study as proof, or name an SME to bring in, only when one is in the capability facts.
 - Some signals are missing (listed as gaps). Do not imply they exist: with no call logged, do not refer to what was said on a call; with no mail, do not refer to an email; with no case study matched, do not cite a specific case study; with no ICP read, do not claim how the company scores.
 - The action is specific and concrete (who does what, with what), at most {MAX_ACTION_WORDS} words.
 - why_now is one line, at most {MAX_WHY_NOW_WORDS} words, and says why this week.
 - effort is low, medium or high for the Practus team.
 - Plain, specific language. No hype."""
+
+# Mahak's ideas-treasury.md, copied verbatim. Ideas are numbered within sections ("## 4. ..." then
+# "1. ..."), and an idea's id is section.item ("4.1").
+TREASURY_FILE = Path(__file__).resolve().parent / "reference" / "ideas_treasury.md"
+_SECTION = re.compile(r"^##\s+(\d+)\.")
+_ITEM = re.compile(r"^(\d+)\.\s+")
+
+
+@lru_cache(maxsize=1)
+def load_treasury() -> tuple[str, frozenset[str]]:
+    """Mahak's Ideas Treasury (text, idea ids), or ("", {}) without the file. In the text each idea
+    carries its full id ("4.1 Offer non-billable ...") so the model can cite it as treasury_ref.
+    Inspiration only: it never decides the objective or the action (CLAUDE.md)."""
+    try:
+        raw = TREASURY_FILE.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return "", frozenset()
+    lines, ids, section = [], [], None
+    for line in raw.splitlines():
+        if heading := _SECTION.match(line):
+            section = heading.group(1)
+        elif section and (item := _ITEM.match(line)):
+            ids.append(f"{section}.{item.group(1)}")
+            line = f"{ids[-1]} {line[item.end():]}"
+        lines.append(line)
+    return "\n".join(lines), frozenset(ids)
+
+
+@lru_cache(maxsize=1)
+def system_blocks() -> tuple[dict, ...]:
+    """The cached prefix, identical for every deal: instructions, the treasury, the compose rules."""
+    treasury, _ = load_treasury()
+    if treasury:
+        middle = ("Ideas Treasury: Mahak's library of engagement plays. Use it for inspiration only; the facts "
+                  "decide the action. Set treasury_ref to the number of the closest idea (for example \"4.1\") "
+                  "when one genuinely resembles your action, otherwise null.\n\n" + treasury)
+    else:
+        middle = "treasury_ref: always null (no Ideas Treasury is loaded)."
+    text = "\n\n".join((SYSTEM_PROMPT, middle, COMPOSE_RULES))
+    return ({"type": "text", "text": text, "cache_control": {"type": "ephemeral"}},)
 
 
 def build_user_message(deal_name: str, card: CardContent) -> str:
@@ -111,14 +163,18 @@ def generate_nba(client: Any, model: str, deal_name: str, card: CardContent) -> 
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            response = client.messages.parse(
-                model=model,
-                max_tokens=16000,
-                system=SYSTEM_PROMPT,
-                thinking={"type": "adaptive"},
-                messages=messages,
-                output_format=NbaDraft,
-            )
+            with tracing.observe_generation(f"nba: {deal_name} (attempt {attempt}/{MAX_ATTEMPTS})", model=model,
+                                            input=messages, tags=["nba"]) as finish:
+                response = client.messages.parse(
+                    model=model,
+                    max_tokens=16000,
+                    system=list(system_blocks()),
+                    thinking={"type": "adaptive"},
+                    messages=messages,
+                    output_format=NbaDraft,
+                )
+                finish(output=getattr(response.parsed_output, "model_dump", lambda: None)(),
+                       usage=getattr(response, "usage", None))
         except anthropic.APIStatusError as exc:
             logger.warning("Claude returned %s for %s", exc.status_code, deal_name)
             return NbaResult(error=f"Claude API error {exc.status_code}: {exc.message}", model=model)
@@ -133,6 +189,8 @@ def generate_nba(client: Any, model: str, deal_name: str, card: CardContent) -> 
             return NbaResult(error=f"Claude returned no usable draft (stop reason: {response.stop_reason}).", model=model)
 
         problems = check_nba(draft.objective, draft.action, draft.why_now, draft.evidence_ids, known)
+        if draft.treasury_ref not in load_treasury()[1]:
+            draft.treasury_ref = None  # a reference to an idea that is not in the treasury is dropped
         if not problems:
             return NbaResult(draft=draft, evidence=evidence_for(draft.evidence_ids, card), model=model)
 

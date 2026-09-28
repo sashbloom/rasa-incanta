@@ -46,11 +46,16 @@ class Settings(BaseSettings):
     exa_api_key: str = ""
     icp_cache_days: int = 28
     icp_concurrency: int = 4  # companies scored in parallel during a run
+    # Persona deep-dive of the person in each deal's outreach log (Exa research + one Claude call),
+    # cached per contact. Needs EXA_API_KEY: there is no LinkedIn scraping or Claude web search.
+    persona_cache_days: int = 56
 
     # LLM observability, shared Practus Langfuse project; our tag is rasa-incanta. Unset = no-op.
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
-    langfuse_baseurl: str = "https://cloud.langfuse.com"
+    # LANGFUSE_BASEURL is the Practus name; LANGFUSE_BASE_URL is accepted too.
+    langfuse_baseurl: str = Field(
+        default="https://cloud.langfuse.com", validation_alias=AliasChoices("langfuse_baseurl", "langfuse_base_url"))
 
     # Zoho CRM, read-only Postgres copy `zoho_data` (Brick 2). Preferred over the API below.
     # Either one connection string (the ICP bot's format) or the separate parts; the URL wins.

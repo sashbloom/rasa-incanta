@@ -77,6 +77,7 @@ const PHASE_LABEL: Record<string, string> = {
   mail: 'Searching Outlook mail',
   capability: 'Matching Setu case studies',
   icp: 'Scoring companies (ICP)',
+  persona: 'Researching contacts (Exa)',
   cards: 'Building context cards',
   nba: 'Drafting actions',
 }
@@ -86,6 +87,7 @@ function phaseCounts(run: RunView): [number, number] | null {
   const s = run.stats
   if (s.phase === 'capability' && s.capability_to_do !== undefined) return [s.capability_done ?? 0, s.capability_to_do]
   if (s.phase === 'icp' && s.icp_to_score) return [s.icp_done ?? 0, s.icp_to_score]
+  if (s.phase === 'persona' && s.persona_to_do) return [s.persona_done ?? 0, s.persona_to_do]
   if (s.phase === 'nba' && s.nba_to_draft !== undefined) return [s.nba_done ?? 0, s.nba_to_draft]
   return null
 }
@@ -94,7 +96,7 @@ function Progress({ run }: { run: RunView }) {
   const phase = run.stats.phase ?? 'pull'
   const counts = phaseCounts(run)
   const share = counts ? (counts[1] === 0 ? 1 : Math.min(counts[0] / counts[1], 1)) : 0
-  const noun = phase === 'icp' ? 'companies' : 'deals'
+  const noun = phase === 'icp' ? 'companies' : phase === 'persona' ? 'contacts' : 'deals'
   const label = `${PHASE_LABEL[phase] ?? 'Working'}${counts ? `: ${counts[0]} of ${counts[1]} ${noun}` : ''}`
   return (
     <div>

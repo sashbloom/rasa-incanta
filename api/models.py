@@ -284,3 +284,21 @@ class CompanyIcp(Timestamped, Base):
     result: Mapped[dict] = mapped_column(JSONType, default=dict)  # the full ScoreResult and interpretations
     data_gaps: Mapped[list] = mapped_column(JSONType, default=list)
     error: Mapped[str | None] = mapped_column(Text)
+
+
+class ContactPersona(Timestamped, Base):
+    """One persona deep-dive of one contact from a deal's outreach log (api/persona/). Append-only,
+    like company_icp: a run reuses the newest `ok` or `no_material` row younger than
+    PERSONA_CACHE_DAYS (8 weeks); failures are recorded but never reused, so they retry."""
+
+    __tablename__ = "contact_persona"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    contact_key: Mapped[str] = mapped_column(String(400), index=True)  # normalised "name|company"
+    contact_name: Mapped[str] = mapped_column(String(200))
+    company_name: Mapped[str] = mapped_column(String(300))
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, default=utcnow)
+    status: Mapped[str] = mapped_column(String(20))  # ok | no_material | failed
+    persona: Mapped[dict] = mapped_column(JSONType, default=dict)  # the 8-section report
+    facts: Mapped[list] = mapped_column(JSONType, default=list)  # the stakeholder facts drawn from it
+    error: Mapped[str | None] = mapped_column(Text)

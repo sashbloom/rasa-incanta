@@ -4,7 +4,8 @@ it rests on, plus gap flags for whatever a source could not provide.
 - `deal_state`: Zoho CRM fields.
 - `conversation`: the deal's Zoho outreach log, its Read.ai meetings and its Outlook mail.
 - `capability`: Setu case studies (the ICP bot's P2 match with its Claude re-rank) and SMEs.
-- `account_fit` and `stakeholder`: the ICP bot's scoring (engine/icp_signal.py).
+- `account_fit` and `stakeholder`: the ICP bot's scoring (engine/icp_signal.py), plus persona research
+  on the person in the outreach log (engine/persona_signal.py).
 - The Zoho contact, when there is one (the mirror has none, so `no_contact` stays).
 
 Every fact has a stable id (e.g. "zoho.stage", "outlook.mail_1", "icp.recommendation"). A next
@@ -224,9 +225,10 @@ def capability_signal(deal: ZohoDeal, case_studies: list[CaseStudy] | None,
 def build_card(deal: ZohoDeal, today: date, tz: str = "Asia/Kolkata", reachouts: list[Reachout] = (),
                case_studies: list[CaseStudy] | None = None, *, meetings: list[MeetingRecord] = (),
                mails: list[Mail] = (), mail_points: dict[int, list[str]] | None = None,
-               capability: Capability | None = None, icp: tuple[dict, dict, str] | None = None) -> CardContent:
+               capability: Capability | None = None, icp: tuple[dict, dict, str] | None = None,
+               persona: tuple[str, list[dict]] | None = None) -> CardContent:
     """`icp` is (account_fit, stakeholder, status) from engine/icp_signal.py, or None when the
-    company has no ICP scoring yet."""
+    company has no ICP scoring yet. `persona` is (contact name, facts) from engine/persona_signal.py."""
     days_in_stage = _days_between(deal.stage_entered_at, today, tz)
     days_since_touch = _days_between(deal.modified_at, today, tz)
 
@@ -279,6 +281,9 @@ def build_card(deal: ZohoDeal, today: date, tz: str = "Asia/Kolkata", reachouts:
         stakeholder_facts.insert(0, _fact("contact", "Contact", deal.contact_name))
     else:
         gaps.append(Gap.NO_CONTACT)
+    if persona and persona[1]:
+        stakeholder["persona_contact"] = persona[0]
+        stakeholder_facts += persona[1]
     if stakeholder_facts:
         stakeholder["facts"] = stakeholder_facts
 

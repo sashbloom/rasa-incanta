@@ -12,6 +12,7 @@ const RUN_SOURCES: [string, string][] = [
   ['setu', 'Setu case studies'],
   ['setu_rerank', 'Setu matching (Claude re-rank)'],
   ['icp', 'ICP scoring'],
+  ['persona', 'Contact research (Exa)'],
 ]
 
 function Row({ name, status }: { name: string; status: string | undefined }) {
@@ -127,7 +128,7 @@ export function Sources() {
         <h2 id="keys-heading" className="t-section m-0 mb-2">Keys</h2>
         <dl className="m-0">
           <Row name="Anthropic (Claude)" status={view.anthropic.configured ? 'ok' : 'ANTHROPIC_API_KEY is not set.'} />
-          <Row name="Exa (ICP web research)" status={view.exa.configured ? 'ok' : 'EXA_API_KEY is not set: the ICP web-research criteria become data gaps.'} />
+          <Row name="Exa (company and contact research)" status={view.exa.configured ? 'ok' : 'EXA_API_KEY is not set: the ICP web-research criteria become data gaps and no contact is researched.'} />
         </dl>
       </section>
     </div>

@@ -121,9 +121,31 @@ account-fit and stakeholder logic is copied into this codebase, not called over 
 - **LLM observability:** follow the Practus platform convention. Every agent uses the same shared
   Langfuse project and keys (`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASEURL`), and
   agents are told apart by a tag in code. Ours is `rasa-incanta`. Tracing is a silent no-op when unset.
-- **Exa:** `EXA_API_KEY` powers the ICP bot's web research (ownership, scale, financials,
-  competitors). Without it those criteria are data gaps, as in the ICP bot, and scores are often
-  provisional (Gate 7).
+  One module, `api/icp/tracing.py`: `observe_generation` around every Claude call (NBA, mail key
+  points, persona, all ICP calls), `observe_search` around every Exa call (with its dollar cost).
+  The client is built from our settings with `host=LANGFUSE_BASEURL` (the SDK itself only reads
+  `LANGFUSE_HOST` from os.environ). A run sets the session `rasa-incanta:run:<id>`; every
+  `pool.submit` must wrap its target in `tracing.propagate_context` or its calls lose the session.
+- **Exa:** `EXA_API_KEY` powers all company and contact web research: the ICP bot's criteria
+  (ownership, scale, financials, competitors) and contact personas. Never Claude's web_search tool
+  and never LinkedIn scraping. Without it those criteria are data gaps, as in the ICP bot, scores
+  are often provisional (Gate 7), and no persona is researched. Each ICP row records
+  `result.exa_research`; once the key is set, a cached score made without Exa is not reused.
+- **Persona:** `api/persona/` (the ICP bot's persona prompt and 8-section schema, copied; the
+  generator adapted). The contact is the latest Customer (else anyone named) in the deal's outreach
+  log, never someone else. Exa search is the only source material; no material means no Claude
+  call. `engine/persona_signal.py` puts observed facts only (role, up to two facts, one hook) on the
+  `stakeholder` signal as `persona.*`. Cached per contact in `contact_persona` for
+  PERSONA_CACHE_DAYS (56); `ok` and `no_material` are reused, failures retry.
+- **Prompt caching (NBA):** `engine/nba.system_blocks()` is one cached system block: instructions,
+  the Ideas Treasury and the compose rules. It must stay byte-identical across deals: never
+  interpolate a deal, date or run into it. The deal card goes in the user message. The run drafts
+  one deal alone, then the rest in parallel, so the cache is written once. The prefix is about 2,000
+  tokens (Sonnet 5 caches from 1024).
+- **Ideas Treasury file:** `api/engine/reference/ideas_treasury.md` is Mahak's `ideas-treasury.md`
+  copied verbatim (44 ideas in 6 sections). Replace the whole file to update it; don't hand-edit ids.
+  An idea's id is section.item ("4.1"); `nba.load_treasury()` writes it onto each idea for the model,
+  and a `treasury_ref` not in the file is dropped.
 
 ## Working agreements
 - Schema change: edit `api/models.py`, then `alembic -c api/alembic.ini revision --autogenerate -m "..."`.

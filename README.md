@@ -85,11 +85,23 @@ The **Sources** page shows each source's status from the latest run.
 - **Read.ai:** in Read.ai add a workspace webhook for "meeting end" pointed at the address the
   Sources page shows (`https://<domain>/reports/rasa-incanta/api/webhooks/readai`), and set
   `READAI_WEBHOOK_SECRET` to the signing key Read.ai gives you.
-- **ICP:** set `EXA_API_KEY`. The first run scores every company (several minutes each, four at a
-  time, so expect hours for 83); later runs reuse scores for 28 days.
+- **ICP and contact research:** set `EXA_API_KEY`. Exa does all company and contact web research:
+  the ICP criteria (ownership, scale, financials, competitors) and the persona of the person in
+  each deal's outreach log. There is no LinkedIn scraping and no Claude web search. The first run
+  scores every company (several minutes each, four at a time, so expect hours for 83); later runs
+  reuse scores for 28 days and contact research for 56 days (`PERSONA_CACHE_DAYS`).
+- **Langfuse:** set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_BASEURL` to the shared
+  Practus project's values. Every Claude and Exa call is traced, tagged `rasa-incanta`, one session
+  per run (`rasa-incanta:run:<id>`), with token and cache counts and Exa's dollar cost. Unset means
+  no tracing and no error.
 
-Rough Claude cost: about one re-rank and one NBA call per deal per run, one small key-points call
-per deal with mail, and a few large calls per company the first time it is ICP-scored.
+Rough cost per run: one re-rank and one NBA call per deal, one small key-points call per deal with
+mail, a few large calls plus Exa searches per company the first time it is ICP-scored, and four
+Exa searches plus one Claude call per contact the first time they are researched. The NBA calls
+share one cached system prefix (instructions, Ideas Treasury, compose rules); only the deal's
+context card varies. With Mahak's Ideas Treasury (`api/engine/reference/ideas_treasury.md`) the
+prefix is about 2,000 tokens, past Sonnet 5's 1024-token caching minimum, so every NBA call after
+the first in a run reads it from cache.
 
 ## Deploy on Railway
 
@@ -101,6 +113,7 @@ per deal with mail, and a few large calls per company the first time it is ICP-s
 4. In the service's Variables set every name in `.env.example` that applies. At minimum:
    - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}`
    - `ENVIRONMENT` = `production`
+   - `ANTHROPIC_API_KEY`, `EXA_API_KEY` (research), and the three `LANGFUSE_*` values (tracing)
 5. The healthcheck is `/health`. Every deploy runs migrations before the app starts, and a failed
    migration stops the boot, so Railway keeps the last good deploy.
 

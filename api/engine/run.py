@@ -9,11 +9,18 @@ Phases (`stats.phase`, with done/total counts for the board's progress bar):
   mail        Outlook mail per deal (delegated Graph), then key points per deal with mail
   capability  the ICP bot's P2 case-study re-rank (one Claude call per deal) and SMEs
   icp         the ICP bot's scoring for companies without a fresh cached result
+  persona     Exa research on the person in each deal's outreach log, cached 8 weeks per contact
   cards       context cards and snapshots
-  nba         one NBA per deal (`nba_limit`; None means every deal, as POST /api/run does)
+  nba         one NBA per deal (`nba_limit`; None means every deal, as POST /api/run does). The first
+              draft runs alone so its cached prompt prefix is written once and read by the rest.
 Slow network work runs in thread pools; database writes stay on this thread. One failing
 source never fails the run: it is recorded under `stats.sources` and becomes gap flags.
-Without an Anthropic key the re-rank, SMEs and ICP scoring are skipped (and said so).
+Without an Anthropic key the re-rank, SMEs and ICP scoring are skipped (and said so); persona
+research also needs EXA_API_KEY.
+
+Every Claude and Exa call is traced in Langfuse under one session per run ("rasa-incanta:run:<id>";
+ICP scoring keeps its own session per company). Pool submits go through tracing.propagate_context,
+because contextvars do not cross into ThreadPoolExecutor workers on their own.
 """
 from __future__ import annotations
 
@@ -32,13 +39,15 @@ from sqlalchemy.orm import Session
 from api.config import Settings
 from api.domain.stages import board_for, stage_position
 from api.domain.weeks import local_today, week_start
-from api.engine import icp_signal
+from api.engine import icp_signal, persona_signal
 from api.engine.capability import Capability, capability_for
 from api.engine.context import CardContent, build_card
 from api.engine.linking import deal_identity, mail_belongs, meeting_belongs
 from api.engine.mail import key_points
 from api.engine.nba import generate_nba
+from api.icp import tracing
 from api.models import ContextCard, Deal, DealSnapshot, Decision, Recommendation, Run
+from api.persona.generator import NoSourceMaterial
 from api.sources import outlook, readai
 from api.sources.setu import SetuResult, fetch_case_studies
 from api.sources.zoho import ZohoDeal, ZohoResult, fetch_deals, jsonable
@@ -120,6 +129,7 @@ def run_week(
     fetch_mail: Callable | None = None,
     capability_fn: Callable[..., Capability] | None = None,
     score_company_fn: Callable | None = None,
+    persona_fn: Callable | None = None,
     llm_client: Any | None = None,
     deal_zoho_id: str | None = None,
     nba_limit: int | None = 1,
@@ -136,6 +146,7 @@ def run_week(
         session.add(run)
         session.commit()
 
+    tracing.current_run_id.set(f"rasa-incanta:run:{run.id}")  # the Langfuse session for this run
     stats: dict[str, Any] = {"phase": "pull", "sources": {}, "nba_created": 0, "nba_kept": 0, "nba_skipped": []}
 
     def save(**updates) -> None:
@@ -180,7 +191,7 @@ def run_week(
     with_mail = [z for z in zoho.deals if mail.by_deal.get(z.zoho_id)]
     if with_mail and client is not None:
         with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-            futures = {pool.submit(key_points, client, settings.llm_model_extraction, z.name, mail.by_deal[z.zoho_id]): z
+            futures = {pool.submit(tracing.propagate_context(key_points), client, settings.llm_model_extraction, z.name, mail.by_deal[z.zoho_id]): z
                        for z in with_mail}
             for future in as_completed(futures):
                 mail_points[futures[future].zoho_id] = future.result()
@@ -191,7 +202,7 @@ def run_week(
     capabilities: dict[str, Capability] = {}
     if capability_fn is not None and case_studies is not None:
         with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-            futures = {pool.submit(capability_fn, z, case_studies): z for z in zoho.deals}
+            futures = {pool.submit(tracing.propagate_context(capability_fn), z, case_studies): z for z in zoho.deals}
             for future in as_completed(futures):
                 z = futures[future]
                 try:
@@ -213,7 +224,7 @@ def run_week(
         companies.setdefault(icp_signal.company_key(z.account_name or z.name), z.account_name or z.name)
     stale = []
     for key, company in companies.items():
-        row = icp_signal.fresh_icp(session, key, now, settings.icp_cache_days)
+        row = icp_signal.fresh_icp(session, key, now, settings.icp_cache_days, require_exa=bool(settings.exa_api_key))
         if row is not None:
             icp_by_key[key] = (row.account_fit, row.stakeholder, row.status)
         else:
@@ -227,11 +238,12 @@ def run_week(
         stats["sources"]["icp"] = "skipped: ANTHROPIC_API_KEY is not set" if stale else "ok (all cached)"
     elif stale:
         with ThreadPoolExecutor(max_workers=max(1, settings.icp_concurrency)) as pool:
-            futures = {pool.submit(score_fn, company, generated_at=now): (key, company) for key, company in stale}
+            futures = {pool.submit(tracing.propagate_context(score_fn), company, generated_at=now): (key, company) for key, company in stale}
             for future in as_completed(futures):
                 key, company = futures[future]
                 try:
-                    row = icp_signal.record(session, company, now, result=future.result())
+                    row = icp_signal.record(session, company, now, result=future.result(),
+                                            exa_research=bool(settings.exa_api_key))
                     icp_by_key[key] = (row.account_fit, row.stakeholder, row.status)
                 except Exception as exc:
                     logger.exception("ICP scoring failed for %s", company)
@@ -245,6 +257,64 @@ def run_week(
                                    else f"{stats['icp_failed']} companies could not be scored ({summary})")
     else:
         stats["sources"]["icp"] = "ok (all cached)"
+
+    # ---------------------------------------------------------------- persona
+    contacts: dict[str, persona_signal.Contact] = {}
+    for z in zoho.deals:
+        contact = persona_signal.primary_contact(zoho.reachouts.get(z.zoho_id, []), z.account_name or z.name)
+        if contact is not None:
+            contacts[z.zoho_id] = contact
+    persona_by_key: dict[str, list[dict]] = {}
+    to_research: dict[str, persona_signal.Contact] = {}
+    for contact in contacts.values():
+        if contact.key in persona_by_key or contact.key in to_research:
+            continue
+        row = persona_signal.fresh_persona(session, contact.key, now, settings.persona_cache_days)
+        if row is not None:
+            persona_by_key[contact.key] = row.facts
+        else:
+            to_research[contact.key] = contact
+    research_fn = persona_fn
+    if research_fn is None and settings.anthropic_api_key and settings.exa_api_key:
+        from api.persona.generator import generate_persona_data
+        research_fn = generate_persona_data
+    save(phase="persona", persona_cached=len(persona_by_key), persona_to_do=len(to_research) if research_fn else 0,
+         persona_done=0, persona_failed=0)
+    if not contacts:
+        stats["sources"]["persona"] = "ok (no named contact in any outreach log)"
+    elif not to_research:
+        stats["sources"]["persona"] = "ok (all cached)"
+    elif research_fn is None:
+        missing = "EXA_API_KEY" if not settings.exa_api_key else "ANTHROPIC_API_KEY"
+        stats["sources"]["persona"] = f"skipped: {missing} is not set"
+    else:
+        def authority(contact: persona_signal.Contact) -> str | None:
+            icp = icp_by_key.get(icp_signal.company_key(contact.company))
+            facts = (icp[1] if icp else {}).get("facts", [])
+            return next((f["value"] for f in facts if f.get("id") == "icp.authority"), None)
+
+        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+            futures = {pool.submit(tracing.propagate_context(research_fn), c.name, c.company, designation=c.designation,
+                                   model=settings.llm_model_icp, known_context=authority(c)): c
+                       for c in to_research.values()}
+            for future in as_completed(futures):
+                contact = futures[future]
+                try:
+                    row = persona_signal.record(session, contact, now, persona=future.result())
+                except NoSourceMaterial:
+                    row = persona_signal.record(session, contact, now, status="no_material")
+                except Exception as exc:
+                    logger.exception("Persona research failed for a contact at %s", contact.company)
+                    row = persona_signal.record(session, contact, now, status="failed",
+                                                error=f"{type(exc).__name__}: {str(exc)[:300]}")
+                    stats["persona_failed"] += 1
+                persona_by_key[contact.key] = row.facts
+                stats["persona_done"] += 1
+                save()
+        researched = stats["persona_done"] - stats["persona_failed"]
+        summary = f"{researched} researched, {stats['persona_cached']} cached"
+        stats["sources"]["persona"] = (f"ok ({summary})" if not stats["persona_failed"]
+                                       else f"{stats['persona_failed']} contacts could not be researched ({summary})")
     save(phase="cards")
 
     # ---------------------------------------------------------------- cards
@@ -256,6 +326,8 @@ def run_week(
             meetings=deal_meetings.get(z.zoho_id, []), mails=mail.by_deal.get(z.zoho_id, []),
             mail_points=mail_points.get(z.zoho_id), capability=capabilities.get(z.zoho_id),
             icp=icp_by_key.get(icp_signal.company_key(z.account_name or z.name)),
+            persona=((contacts[z.zoho_id].name, persona_by_key.get(contacts[z.zoho_id].key, []))
+                     if z.zoho_id in contacts else None),
         )
         cards[z.zoho_id] = card
         snapshot = {k: v for k, v in asdict(z).items() if k != "raw"}
@@ -287,31 +359,37 @@ def run_week(
             to_draft.append(z)
     save()
 
+    def keep(z: ZohoDeal, result) -> None:
+        if result.ok:
+            draft, card = result.draft, cards[z.zoho_id]
+            case = (card.capability.get("case_studies") or [None])[0]
+            sme = (card.capability.get("smes") or [None])[0]
+            session.add(Recommendation(
+                run_id=run.id, deal_id=deals[z.zoho_id].id, rank=1, objective=draft.objective,
+                action=draft.action.strip(), why_now=draft.why_now.strip(), evidence=result.evidence,
+                effort=draft.effort, gaps=card.gaps, model=result.model, treasury_ref=draft.treasury_ref,
+                proof={"name": case["name"], "why": case.get("why")} if case else {},
+                sme=sme["name"] if sme else None,
+            ))
+            stats["nba_created"] += 1
+        else:
+            stats["nba_skipped"].append({"deal": z.name, "reason": result.error, "problems": result.problems})
+        stats["nba_done"] += 1
+        save()  # progress is visible while the run is still going, skips included
+
+    # The first draft goes alone: it writes the prompt cache (the shared system prefix) once, and
+    # the parallel drafts after it read it instead of each paying to write it.
+    for z in to_draft[:1]:
+        keep(z, generate_nba(client, settings.llm_model_actions, z.name, cards[z.zoho_id]))  # never raises
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-        futures = {pool.submit(generate_nba, client, settings.llm_model_actions, z.name, cards[z.zoho_id]): z
-                   for z in to_draft}
+        futures = {pool.submit(tracing.propagate_context(generate_nba), client, settings.llm_model_actions, z.name,
+                               cards[z.zoho_id]): z for z in to_draft[1:]}
         for future in as_completed(futures):
-            z = futures[future]
-            result = future.result()  # generate_nba never raises
-            if result.ok:
-                draft, card = result.draft, cards[z.zoho_id]
-                case = (card.capability.get("case_studies") or [None])[0]
-                sme = (card.capability.get("smes") or [None])[0]
-                session.add(Recommendation(
-                    run_id=run.id, deal_id=deals[z.zoho_id].id, rank=1, objective=draft.objective,
-                    action=draft.action.strip(), why_now=draft.why_now.strip(), evidence=result.evidence,
-                    effort=draft.effort, gaps=card.gaps, model=result.model,
-                    proof={"name": case["name"], "why": case.get("why")} if case else {},
-                    sme=sme["name"] if sme else None,
-                ))
-                stats["nba_created"] += 1
-            else:
-                stats["nba_skipped"].append({"deal": z.name, "reason": result.error, "problems": result.problems})
-            stats["nba_done"] += 1
-            save()  # progress is visible while the run is still going, skips included
+            keep(futures[future], future.result())
 
     run.status = "partial" if stats["nba_skipped"] else "succeeded"
     run.finished_at = datetime.now(timezone.utc)
     save(phase="done")
+    tracing.flush()
     logger.info("Run %s finished: %s", run.id, run.status)
     return run
