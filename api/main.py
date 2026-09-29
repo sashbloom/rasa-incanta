@@ -23,6 +23,8 @@ from sqlalchemy.orm import Session
 from api import __version__
 from api.config import REPORT_PREFIX, get_settings
 from api.db import get_session, get_sessionmaker
+from api.domain.matching import has_industry, label_matches, resolve_case_study_industry
+from api.domain.stages import board_for
 from api.domain.weeks import week_start
 from api.engine.run import run_week
 from api.icp import setu_db, setu_embeddings
@@ -149,6 +151,65 @@ def setu_enriched(session: Session = Depends(get_session)) -> list[dict]:
         out.append({"entity_name": cs["entity_name"], "content": cs["content"], "industry": cs["industry"],
                     "service_line": cs["service_line"], "status": status, "generated_context": generated_context})
     return out
+
+
+_RICH_FIELD_COUNT = 4  # problem statements, industry, contact_id, business area
+
+
+def _richness(z, reachout_count: int, setu_industries: list[str]) -> dict:
+    filled = sum([
+        bool(z.problem_statements),
+        has_industry(z.industry),
+        bool(z.raw.get("contact_id")),
+        bool(z.business_area),
+    ])
+    industry_match = has_industry(z.industry) and label_matches(
+        z.industry, setu_industries, resolve_alias=resolve_case_study_industry)
+    board = board_for(z.stage)
+    # Outreach counts for most, a Setu industry match is worth a couple of filled fields on its
+    # own (a real capability signal, not just a filled box), and the field count rounds it out.
+    score = reachout_count + (2 if industry_match else 0) + filled
+    return {"deal": z, "board": board, "reachout_count": reachout_count, "industry_match": industry_match,
+           "filled_field_count": filled, "score": score}
+
+
+@fastapi_app.get("/api/debug/richest-deals", dependencies=[Depends(require_debug_key)])
+def richest_deals() -> list[dict]:
+    """The best-documented deals for a PILOT_COMPANIES shortlist, spread across all three boards
+    so a pilot isn't accidentally all-pipeline or all-prospect. Richness = outreach log entries,
+    a Setu industry match (the same check engine/capability.py uses for the real capability
+    signal), and how many of four key Zoho fields are filled (problem statements, industry,
+    contact_id, business area).
+
+    Ranks within each board first, takes the top 5 from each (15 across 3 boards), then backfills
+    any shortfall — a board with fewer than 5 in-scope deals doesn't shrink the total — from
+    whatever is left, richest first."""
+    settings = get_settings()
+    zoho = fetch_deals(settings)
+    if not zoho.ok:
+        raise HTTPException(503, f"Could not read the Zoho database: {zoho.error}")
+    setu = fetch_case_studies(settings)
+    setu_industries = [cs.industry for cs in setu.case_studies if cs.industry] if setu.ok else []
+
+    scored = [_richness(z, len(zoho.reachouts.get(z.zoho_id, [])), setu_industries) for z in zoho.deals]
+    by_board: dict = {}
+    for s in scored:
+        by_board.setdefault(s["board"], []).append(s)
+    for rows in by_board.values():
+        rows.sort(key=lambda s: s["score"], reverse=True)
+
+    per_board = 5
+    picked = [s for rows in by_board.values() for s in rows[:per_board]]
+    leftover = sorted((s for rows in by_board.values() for s in rows[per_board:]),
+                      key=lambda s: s["score"], reverse=True)
+    picked += leftover[:max(0, 15 - len(picked))]
+    picked.sort(key=lambda s: ((s["board"].value if s["board"] else ""), -s["score"]))
+
+    return [{
+        "company": s["deal"].account_name, "deal_name": s["deal"].name, "stage": s["deal"].stage,
+        "board": s["board"].value if s["board"] else None, "outreach_count": s["reachout_count"],
+        "setu_industry_match": s["industry_match"], "filled_field_count": s["filled_field_count"],
+    } for s in picked[:15]]
 
 
 # ---------------------------------------------------------------- runs

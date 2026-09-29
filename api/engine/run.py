@@ -165,6 +165,13 @@ def run_week(
         return run
     stats["sources"]["zoho_outreach"] = zoho.reachout_error or "ok"
 
+    pilot = settings.pilot_company_list
+    if pilot:
+        pilot_keys = {icp_signal.company_key(c) for c in pilot}
+        total = len(zoho.deals)
+        zoho.deals = [z for z in zoho.deals if icp_signal.company_key(z.account_name or z.name) in pilot_keys]
+        stats["sources"]["zoho"] = f"ok (pilot: {len(zoho.deals)} of {total} deals, {len(pilot)} companies)"
+
     setu = fetch_setu(settings)  # once per run; a Setu failure only costs the capability signal
     stats["sources"]["setu"] = "ok" if setu.ok else setu.error
     case_studies = setu.case_studies if setu.ok else None

@@ -177,12 +177,21 @@ account-fit and stakeholder logic is copied into this codebase, not called over 
 - Tests: `python -m pytest -q` from the repo root. Every brick adds tests. Sources are tested with
   recorded fixtures, never live calls. Security checks must be able to fail: traversal uses 3+
   levels against the raw ASGI path, scoping uses two restricted users who see different deals.
-- Debug endpoints (raw source dumps, internal tooling — currently `GET /api/setu/case-studies` and
-  `/api/setu/enriched`): gate every one behind `dependencies=[Depends(require_debug_key)]`
-  (`api/main.py`). `X-Debug-Key: <SESSION_SECRET>` or a 404, indistinguishable from a route that
-  doesn't exist — never a 401/403 that confirms something is there. A header, not a query
-  parameter, so the key never lands in a URL that gets logged. An unset `SESSION_SECRET` refuses
-  every key, including an empty one, so a half-configured deploy can't turn this into a wildcard.
+- Debug endpoints (raw source dumps, internal tooling — currently `GET /api/setu/case-studies`,
+  `/api/setu/enriched` and `/api/debug/richest-deals`): gate every one behind
+  `dependencies=[Depends(require_debug_key)]` (`api/main.py`). `X-Debug-Key: <SESSION_SECRET>` or
+  a 404, indistinguishable from a route that doesn't exist — never a 401/403 that confirms
+  something is there. A header, not a query parameter, so the key never lands in a URL that gets
+  logged. An unset `SESSION_SECRET` refuses every key, including an empty one, so a
+  half-configured deploy can't turn this into a wildcard.
+- **Pilot runs:** `PILOT_COMPANIES`, a comma-separated list of company names. Set, `run_week`
+  filters to only those companies (matched case/suffix-insensitively via
+  `engine.icp_signal.company_key`, same as the ICP and persona caches) right after the Zoho pull,
+  before anything else touches `zoho.deals`; unset, every in-scope deal, as before.
+  `GET /api/debug/richest-deals` (gated the same as every debug endpoint) finds candidates: the
+  15 best-documented deals — outreach log entries, a Setu industry match, how many of four key
+  Zoho fields are filled — capped at 5 per board and backfilled from the rest so a pilot isn't
+  accidentally all one board.
 - Each source returns a typed result plus its gap flags, so the engine never has to guess what failed.
 
 ## Build plan

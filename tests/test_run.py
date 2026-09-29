@@ -108,3 +108,31 @@ def test_citing_another_deals_facts_is_rejected(session):
                    deal_zoho_id="598723000011234002")
     assert count(session, Recommendation) == 0
     assert "not on the card" in run.stats["nba_skipped"][0]["problems"][0]
+
+
+# ---------------------------------------------------------------- PILOT_COMPANIES
+
+def test_pilot_companies_processes_only_those_companies(session):
+    run = run_week(session, settings(pilot_companies="Northwind Foods"), now=NOW, fetch=zoho_fetch(),
+                   llm_client=FakeClaude(reply()))
+    assert run.stats["deals"] == 1
+    assert count(session, Deal) == 1
+    assert session.scalar(select(Deal)).name.startswith("Northwind")
+    assert run.stats["sources"]["zoho"] == "ok (pilot: 1 of 2 deals, 1 companies)"
+
+
+def test_pilot_companies_matches_ignoring_case_and_legal_suffix(session):
+    # the fixture's real account name is "Northwind Foods Pvt Ltd" -- neither the case nor the suffix is typed here
+    run = run_week(session, settings(pilot_companies="NORTHWIND FOODS"), now=NOW, fetch=zoho_fetch())
+    assert run.stats["deals"] == 1
+
+
+def test_pilot_companies_comma_separated_list(session):
+    run = run_week(session, settings(pilot_companies="Northwind Foods, Blue Harbour Retail"), now=NOW,
+                   fetch=zoho_fetch())
+    assert run.stats["deals"] == 2  # both named companies, whitespace around the comma trimmed
+
+
+def test_pilot_companies_unset_processes_every_deal(session):
+    run = run_week(session, settings(), now=NOW, fetch=zoho_fetch())
+    assert run.stats["deals"] == 2 and run.stats["sources"]["zoho"] == "ok"  # no pilot note when unset

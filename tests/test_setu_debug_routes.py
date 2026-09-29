@@ -8,19 +8,6 @@ import pytest
 from api.icp import setu_embeddings
 from api.models import SetuCaseStudyContext
 
-SECRET = "test-debug-secret"
-
-
-@pytest.fixture()
-def debug_key(monkeypatch):
-    """SESSION_SECRET set to SECRET for this test; every other test sees it unset (conftest.py)."""
-    from api.config import get_settings
-
-    monkeypatch.setenv("SESSION_SECRET", SECRET)
-    get_settings.cache_clear()
-    yield SECRET
-    get_settings.cache_clear()
-
 
 def row(name, content="", industry="Food Processing", service_line="SFT"):
     return {"entity_name": name, "content": content, "industry": industry, "service_line": service_line}
@@ -58,7 +45,7 @@ def test_the_key_in_the_query_string_no_longer_works(client, debug_key):
 
 def test_the_right_key_gets_through(client, debug_key):
     with patch("api.icp.setu_db.fetch_case_studies", return_value=[]):
-        response = client.get("/api/setu/case-studies", headers={"X-Debug-Key": SECRET})
+        response = client.get("/api/setu/case-studies", headers={"X-Debug-Key": debug_key})
     assert response.status_code == 200 and response.json() == []
 
 

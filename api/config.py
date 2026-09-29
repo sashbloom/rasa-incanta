@@ -27,6 +27,16 @@ class Settings(BaseSettings):
     timezone: str = "Asia/Kolkata"
     static_dir: str = str(Path(__file__).resolve().parent / "static")  # the built React app
 
+    # A pilot run: comma-separated company names. Set, a run only processes deals from those
+    # companies (still upserted and snapshotted normally, just fewer of them); unset, every
+    # in-scope deal. Matched the same way company identity already works for the ICP and persona
+    # caches (engine.icp_signal.company_key): case-insensitive, legal-suffix-insensitive.
+    pilot_companies: str = ""
+
+    @property
+    def pilot_company_list(self) -> list[str]:
+        return [c.strip() for c in self.pilot_companies.split(",") if c.strip()]
+
     # Our own login (api/auth.py, not wired in while the board is open). Unset = sign-in refused.
     session_secret: str = ""
     session_max_age_hours: int = 12

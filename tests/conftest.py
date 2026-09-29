@@ -69,3 +69,19 @@ def client(migrated):
 
     with TestClient(app) as test_client:
         yield test_client
+
+
+DEBUG_KEY = "test-debug-secret"
+
+
+@pytest.fixture()
+def debug_key(monkeypatch):
+    """SESSION_SECRET set to DEBUG_KEY for this test, so a debug route's require_debug_key gate
+    (api/main.py) opens with `headers={"X-Debug-Key": DEBUG_KEY}`. Every other test sees it unset
+    (db_url above), so a debug route 404s unless a test explicitly asks for this fixture."""
+    from api.config import get_settings
+
+    monkeypatch.setenv("SESSION_SECRET", DEBUG_KEY)
+    get_settings.cache_clear()
+    yield DEBUG_KEY
+    get_settings.cache_clear()
