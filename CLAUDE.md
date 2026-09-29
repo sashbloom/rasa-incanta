@@ -177,6 +177,11 @@ account-fit and stakeholder logic is copied into this codebase, not called over 
 - Tests: `python -m pytest -q` from the repo root. Every brick adds tests. Sources are tested with
   recorded fixtures, never live calls. Security checks must be able to fail: traversal uses 3+
   levels against the raw ASGI path, scoping uses two restricted users who see different deals.
+- Debug endpoints (raw source dumps, internal tooling — currently `GET /api/setu/case-studies` and
+  `/api/setu/enriched`): gate every one behind `dependencies=[Depends(require_debug_key)]`
+  (`api/main.py`). `?key=<SESSION_SECRET>` or a 404, indistinguishable from a route that doesn't
+  exist — never a 401/403 that confirms something is there. An unset `SESSION_SECRET` refuses
+  every key, including an empty one, so a half-configured deploy can't turn this into a wildcard.
 - Each source returns a typed result plus its gap flags, so the engine never has to guess what failed.
 
 ## Build plan
