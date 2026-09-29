@@ -1,6 +1,6 @@
 """GET /api/setu/case-studies and /api/setu/enriched: raw and enriched Setu case studies, gated
-behind ?key=<SESSION_SECRET> (require_debug_key) — a wrong or missing key looks like no route at
-all, not like a locked door."""
+behind an X-Debug-Key: <SESSION_SECRET> header (require_debug_key) — a wrong or missing key looks
+like no route at all, not like a locked door."""
 from unittest.mock import patch
 
 import pytest
@@ -38,20 +38,27 @@ def test_no_key_is_a_404_not_a_401(client, debug_key, path):
 
 @pytest.mark.parametrize("path", ["/api/setu/case-studies", "/api/setu/enriched"])
 def test_the_wrong_key_is_a_404(client, debug_key, path):
-    assert client.get(path, params={"key": "not-the-secret"}).status_code == 404
+    assert client.get(path, headers={"X-Debug-Key": "not-the-secret"}).status_code == 404
 
 
 @pytest.mark.parametrize("path", ["/api/setu/case-studies", "/api/setu/enriched"])
 def test_an_unset_secret_refuses_every_key_not_just_a_wrong_one(client, path):
     """SESSION_SECRET unset (the default while the board is open) must not become a wildcard --
     an empty key against an empty secret must still 404, matching CLAUDE.md's fail-closed rule."""
-    assert client.get(path, params={"key": ""}).status_code == 404
-    assert client.get(path, params={"key": "anything"}).status_code == 404
+    assert client.get(path, headers={"X-Debug-Key": ""}).status_code == 404
+    assert client.get(path, headers={"X-Debug-Key": "anything"}).status_code == 404
+
+
+def test_the_key_in_the_query_string_no_longer_works(client, debug_key):
+    """The gate moved from ?key= to a header on purpose (a query string gets logged); the old
+    query parameter must not be a back door."""
+    response = client.get("/api/setu/case-studies", params={"key": debug_key})
+    assert response.status_code == 404
 
 
 def test_the_right_key_gets_through(client, debug_key):
     with patch("api.icp.setu_db.fetch_case_studies", return_value=[]):
-        response = client.get("/api/setu/case-studies", params={"key": SECRET})
+        response = client.get("/api/setu/case-studies", headers={"X-Debug-Key": SECRET})
     assert response.status_code == 200 and response.json() == []
 
 
@@ -60,7 +67,7 @@ def test_the_right_key_gets_through(client, debug_key):
 def test_case_studies_returns_the_raw_setu_fields(client, debug_key):
     rows = [row("Patisserie & Bakes", content="A real, detailed write-up well over fifty characters long.")]
     with patch("api.icp.setu_db.fetch_case_studies", return_value=rows):
-        response = client.get("/api/setu/case-studies", params={"key": debug_key})
+        response = client.get("/api/setu/case-studies", headers={"X-Debug-Key": debug_key})
 
     assert response.status_code == 200
     [cs] = response.json()
@@ -70,7 +77,7 @@ def test_case_studies_returns_the_raw_setu_fields(client, debug_key):
 
 def test_case_studies_returns_503_when_setu_is_unreachable(client, debug_key):
     with patch("api.icp.setu_db.fetch_case_studies", side_effect=RuntimeError("Setu Postgres is not configured")):
-        response = client.get("/api/setu/case-studies", params={"key": debug_key})
+        response = client.get("/api/setu/case-studies", headers={"X-Debug-Key": debug_key})
 
     assert response.status_code == 503 and "Setu" in response.json()["detail"]
 
@@ -91,7 +98,7 @@ def test_enriched_labels_real_content_enriched_and_pending(client, debug_key):
         s.commit()
 
     with patch("api.icp.setu_db.fetch_case_studies", return_value=[real, thin_done, thin_pending]):
-        response = client.get("/api/setu/enriched", params={"key": debug_key})
+        response = client.get("/api/setu/enriched", headers={"X-Debug-Key": debug_key})
 
     assert response.status_code == 200
     by_name = {cs["entity_name"]: cs for cs in response.json()}
@@ -105,6 +112,6 @@ def test_enriched_labels_real_content_enriched_and_pending(client, debug_key):
 
 def test_enriched_returns_503_when_setu_is_unreachable(client, debug_key):
     with patch("api.icp.setu_db.fetch_case_studies", side_effect=RuntimeError("down")):
-        response = client.get("/api/setu/enriched", params={"key": debug_key})
+        response = client.get("/api/setu/enriched", headers={"X-Debug-Key": debug_key})
 
     assert response.status_code == 503

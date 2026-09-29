@@ -95,16 +95,19 @@ def deals(session: Session = Depends(get_session)) -> list[dict]:
 
 # ---------------------------------------------------------------- debug endpoints
 
-def require_debug_key(key: str | None = None) -> None:
+def require_debug_key(request: Request) -> None:
     """Gate for every debug endpoint (raw source dumps, internal tooling that isn't for the
-    board): pass `?key=<SESSION_SECRET>` or get a 404, indistinguishable from a route that does
-    not exist at all — a wrong or missing key never reveals that the endpoint is even there. An
-    unset SESSION_SECRET means every debug route refuses unconditionally, whatever `key` is
-    given: an empty secret is not a wildcard that matches an empty or missing key (CLAUDE.md rule
-    6, fail closed). `hmac.compare_digest` avoids a timing side-channel on the comparison.
+    board): send `X-Debug-Key: <SESSION_SECRET>` or get a 404, indistinguishable from a route
+    that does not exist at all — a wrong or missing key never reveals that the endpoint is even
+    there. A header, not a query parameter, so the key never lands in a URL that gets logged by
+    Railway, a proxy in front of it, or a browser's history. An unset SESSION_SECRET means every
+    debug route refuses unconditionally, whatever the header holds: an empty secret is not a
+    wildcard that matches an empty or missing header (CLAUDE.md rule 6, fail closed).
+    `hmac.compare_digest` avoids a timing side-channel on the comparison.
 
     Add `dependencies=[Depends(require_debug_key)]` to any new debug route to gate it the same
     way; nothing else about the route needs to change."""
+    key = request.headers.get("x-debug-key") or ""
     expected = get_settings().session_secret.strip()
     if not expected or not key or not hmac.compare_digest(key.encode(), expected.encode()):
         raise HTTPException(404)
@@ -120,8 +123,8 @@ def _fetch_case_studies_or_503() -> list[dict]:
 @fastapi_app.get("/api/setu/case-studies", dependencies=[Depends(require_debug_key)])
 def setu_case_studies() -> list[dict]:
     """Every raw case study on file in Setu, unfiltered — a direct read, gated behind
-    `?key=<SESSION_SECRET>` (require_debug_key), for checking what is actually in the corpus.
-    Same source `find_case_study_matches_embedded()` scores."""
+    `X-Debug-Key: <SESSION_SECRET>` (require_debug_key), for checking what is actually in the
+    corpus. Same source `find_case_study_matches_embedded()` scores."""
     return [{"entity_name": cs["entity_name"], "content": cs["content"], "industry": cs["industry"],
             "service_line": cs["service_line"]} for cs in _fetch_case_studies_or_503()]
 
