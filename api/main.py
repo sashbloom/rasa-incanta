@@ -24,7 +24,8 @@ from api.config import REPORT_PREFIX, get_settings
 from api.db import get_session, get_sessionmaker
 from api.domain.weeks import week_start
 from api.engine.run import run_week
-from api.models import Meeting, Run
+from api.icp import setu_db, setu_embeddings
+from api.models import Meeting, Run, SetuCaseStudyContext
 from api.prefix import MountUnderPrefix
 from api.sources import outlook, readai
 from api.sources.setu import fetch_case_studies
@@ -89,6 +90,45 @@ def deal(deal_id: uuid.UUID, session: Session = Depends(get_session)) -> dict:
 def deals(session: Session = Depends(get_session)) -> list[dict]:
     """Every deal, active or not, each with its latest NBAs."""
     return deals_view(session)
+
+
+# ---------------------------------------------------------------- setu case studies (debug)
+
+def _fetch_case_studies_or_503() -> list[dict]:
+    try:
+        return setu_db.fetch_case_studies()
+    except Exception as exc:
+        raise HTTPException(503, f"Could not read the Setu database: {exc}") from exc
+
+
+@fastapi_app.get("/api/setu/case-studies")
+def setu_case_studies() -> list[dict]:
+    """Every raw case study on file in Setu, unfiltered — a direct read, no auth, for checking
+    what is actually in the corpus. Same source `find_case_study_matches_embedded()` scores."""
+    return [{"entity_name": cs["entity_name"], "content": cs["content"], "industry": cs["industry"],
+            "service_line": cs["service_line"]} for cs in _fetch_case_studies_or_503()]
+
+
+@fastapi_app.get("/api/setu/enriched")
+def setu_enriched(session: Session = Depends(get_session)) -> list[dict]:
+    """Every case study plus our generated context (setu_case_study_contexts), and which case is
+    which: `real_content` (its own text is >= setu_embeddings.MIN_CONTENT_CHARS, no enrichment
+    needed), `enriched` (thin, and a generated context is cached under this exact source text), or
+    `pending` (thin, not yet enriched — the next run that embeds case studies will enrich it)."""
+    case_studies = _fetch_case_studies_or_503()
+    hashes = [setu_embeddings.source_hash(cs["entity_name"], cs["industry"], cs["service_line"], cs["content"] or "")
+             for cs in case_studies]
+    contexts = {row.source_hash: row.generated_context for row in
+               session.scalars(select(SetuCaseStudyContext).where(SetuCaseStudyContext.source_hash.in_(hashes)))}
+
+    out = []
+    for cs, h in zip(case_studies, hashes):
+        thin = len((cs["content"] or "").strip()) < setu_embeddings.MIN_CONTENT_CHARS
+        generated_context = contexts.get(h)
+        status = "real_content" if not thin else ("enriched" if generated_context is not None else "pending")
+        out.append({"entity_name": cs["entity_name"], "content": cs["content"], "industry": cs["industry"],
+                    "service_line": cs["service_line"], "status": status, "generated_context": generated_context})
+    return out
 
 
 # ---------------------------------------------------------------- runs
