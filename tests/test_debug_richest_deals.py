@@ -77,7 +77,9 @@ def test_richness_fields_reflect_outreach_industry_match_and_filled_fields(clien
     rich = deal("d1", "Prospect", account="Sula Wines", industry="Wine", business_area="Growth",
                problem_statements=["Margin pressure."], raw={"contact_id": "c-1"})
     thin = deal("d2", "Prospect", account="Blue Harbour", industry=None)
-    zoho = ZohoResult(deals=[rich, thin], reachouts={"d1": reachouts_for("d1", 3), "d2": []})
+    d1_reachouts = [Reachout(deal_zoho_id="d1", person="Priya Shah"), Reachout(deal_zoho_id="d1", person="Priya Shah"),
+                    Reachout(deal_zoho_id="d1", person="Arjun Menon")]
+    zoho = ZohoResult(deals=[rich, thin], reachouts={"d1": d1_reachouts, "d2": []})
     setu = SetuResult(case_studies=[CaseStudy(name="Wine Case", content="x", industry="Wine")])
 
     with patch("api.main.fetch_deals", return_value=zoho), patch("api.main.fetch_case_studies", return_value=setu):
@@ -85,10 +87,43 @@ def test_richness_fields_reflect_outreach_industry_match_and_filled_fields(clien
 
     by_name = {r["company"]: r for r in response.json()}
     assert by_name["Sula Wines"] == {"company": "Sula Wines", "deal_name": "Deal d1", "stage": "Prospect",
-                                     "board": "prospect", "outreach_count": 3, "setu_industry_match": True,
+                                     "board": "prospect", "outreach_count": 3, "contact_name": "Priya Shah",
+                                     "outreach_has_contact": True, "setu_industry_match": True,
                                      "filled_field_count": 4}
     assert by_name["Blue Harbour"]["setu_industry_match"] is False
     assert by_name["Blue Harbour"]["filled_field_count"] == 0
+    assert by_name["Blue Harbour"]["contact_name"] is None and by_name["Blue Harbour"]["outreach_has_contact"] is False
+
+
+def test_contact_name_is_the_most_frequent_usable_name_junk_excluded(client, debug_key):
+    reachouts = [
+        Reachout(deal_zoho_id="d1", person="priya.shah@northwindfoods.example"),  # email in the name field: excluded
+        Reachout(deal_zoho_id="d1", person="NA"),  # placeholder: excluded
+        Reachout(deal_zoho_id="d1", person="Arjun Menon"),
+        Reachout(deal_zoho_id="d1", person="Priya Shah"),
+        Reachout(deal_zoho_id="d1", person="Priya Shah"),
+    ]
+    zoho = ZohoResult(deals=[deal("d1", "Prospect")], reachouts={"d1": reachouts})
+
+    with patch("api.main.fetch_deals", return_value=zoho), \
+         patch("api.main.fetch_case_studies", return_value=SetuResult(case_studies=[])):
+        response = client.get("/api/debug/richest-deals", headers={"X-Debug-Key": debug_key})
+
+    row = response.json()[0]
+    assert row["contact_name"] == "Priya Shah" and row["outreach_has_contact"] is True
+    assert row["outreach_count"] == 5  # the count is raw entries; junk filtering only affects the name pick
+
+
+def test_a_deal_with_only_junk_names_has_no_contact(client, debug_key):
+    reachouts = [Reachout(deal_zoho_id="d1", person="NA"), Reachout(deal_zoho_id="d1", person="  ")]
+    zoho = ZohoResult(deals=[deal("d1", "Prospect")], reachouts={"d1": reachouts})
+
+    with patch("api.main.fetch_deals", return_value=zoho), \
+         patch("api.main.fetch_case_studies", return_value=SetuResult(case_studies=[])):
+        response = client.get("/api/debug/richest-deals", headers={"X-Debug-Key": debug_key})
+
+    row = response.json()[0]
+    assert row["contact_name"] is None and row["outreach_has_contact"] is False and row["outreach_count"] == 2
 
 
 def test_a_setu_outage_does_not_fail_the_endpoint_it_just_means_no_industry_matches(client, debug_key):

@@ -10,6 +10,7 @@ import os
 import secrets
 import threading
 import uuid
+from collections import Counter
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -26,6 +27,7 @@ from api.db import get_session, get_sessionmaker
 from api.domain.matching import has_industry, label_matches, resolve_case_study_industry
 from api.domain.stages import board_for
 from api.domain.weeks import week_start
+from api.engine.persona_signal import usable_name
 from api.engine.run import run_week
 from api.icp import setu_db, setu_embeddings
 from api.models import Meeting, Run, SetuCaseStudyContext
@@ -156,7 +158,19 @@ def setu_enriched(session: Session = Depends(get_session)) -> list[dict]:
 _RICH_FIELD_COUNT = 4  # problem statements, industry, contact_id, business area
 
 
-def _richness(z, reachout_count: int, setu_industries: list[str]) -> dict:
+def _most_frequent_contact(reachouts: list) -> str | None:
+    """The contact `person` named most often in a deal's outreach log — plain frequency, not
+    persona_signal.primary_contact()'s recency/role pick, so this stays a query over
+    reachout_tracker with no ICP or persona logic involved. Junk (an email address, "NA", a blank
+    field) is filtered with the same usable_name() persona_signal itself uses, so a deal isn't
+    shown as having a contact when the only "name" on file is unusable."""
+    names = [n for n in (usable_name(r.person) for r in reachouts) if n]
+    return Counter(names).most_common(1)[0][0] if names else None
+
+
+def _richness(z, reachouts: list, setu_industries: list[str]) -> dict:
+    reachout_count = len(reachouts)
+    contact_name = _most_frequent_contact(reachouts)
     filled = sum([
         bool(z.problem_statements),
         has_industry(z.industry),
@@ -169,8 +183,8 @@ def _richness(z, reachout_count: int, setu_industries: list[str]) -> dict:
     # Outreach counts for most, a Setu industry match is worth a couple of filled fields on its
     # own (a real capability signal, not just a filled box), and the field count rounds it out.
     score = reachout_count + (2 if industry_match else 0) + filled
-    return {"deal": z, "board": board, "reachout_count": reachout_count, "industry_match": industry_match,
-           "filled_field_count": filled, "score": score}
+    return {"deal": z, "board": board, "reachout_count": reachout_count, "contact_name": contact_name,
+           "industry_match": industry_match, "filled_field_count": filled, "score": score}
 
 
 @fastapi_app.get("/api/debug/richest-deals", dependencies=[Depends(require_debug_key)])
@@ -191,7 +205,7 @@ def richest_deals() -> list[dict]:
     setu = fetch_case_studies(settings)
     setu_industries = [cs.industry for cs in setu.case_studies if cs.industry] if setu.ok else []
 
-    scored = [_richness(z, len(zoho.reachouts.get(z.zoho_id, [])), setu_industries) for z in zoho.deals]
+    scored = [_richness(z, zoho.reachouts.get(z.zoho_id, []), setu_industries) for z in zoho.deals]
     by_board: dict = {}
     for s in scored:
         by_board.setdefault(s["board"], []).append(s)
@@ -208,6 +222,7 @@ def richest_deals() -> list[dict]:
     return [{
         "company": s["deal"].account_name, "deal_name": s["deal"].name, "stage": s["deal"].stage,
         "board": s["board"].value if s["board"] else None, "outreach_count": s["reachout_count"],
+        "contact_name": s["contact_name"], "outreach_has_contact": s["contact_name"] is not None,
         "setu_industry_match": s["industry_match"], "filled_field_count": s["filled_field_count"],
     } for s in picked[:15]]
 

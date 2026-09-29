@@ -191,7 +191,11 @@ account-fit and stakeholder logic is copied into this codebase, not called over 
   `GET /api/debug/richest-deals` (gated the same as every debug endpoint) finds candidates: the
   15 best-documented deals — outreach log entries, a Setu industry match, how many of four key
   Zoho fields are filled — capped at 5 per board and backfilled from the rest so a pilot isn't
-  accidentally all one board.
+  accidentally all one board. Each row also carries `contact_name` (the most frequent name in the
+  deal's outreach log; `usable_name()` in `engine/persona_signal.py`, shared so both agree on what
+  counts as a real name, not an email/phone typed into the field) and `outreach_has_contact` — a
+  plain frequency count over `reachout_tracker`, deliberately not `primary_contact()`'s
+  recency/role pick, so this stays ICP- and persona-free.
 - Each source returns a typed result plus its gap flags, so the engine never has to guess what failed.
 
 ## Build plan

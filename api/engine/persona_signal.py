@@ -44,7 +44,10 @@ def contact_key(name: str, company: str) -> str:
     return f"{' '.join(re.sub(r'[^a-z ]', ' ', name.lower()).split())}|{company_key(company)}"
 
 
-def _usable_name(person: str | None) -> str | None:
+def usable_name(person: str | None) -> str | None:
+    """The cleaned name, or None if `person` isn't really one -- empty, a placeholder ("NA", "the
+    client"), or an email address or phone number typed into the name field. Shared with
+    api/main.py's richest-deals debug endpoint, so both agree on what counts as a real contact."""
     name = " ".join((person or "").split())
     if not name or name.lower() in _NOT_A_NAME or not re.search(r"[A-Za-z]{2}", name):
         return None
@@ -55,13 +58,13 @@ def _usable_name(person: str | None) -> str | None:
 
 def primary_contact(reachouts: list[Reachout], company: str) -> Contact | None:
     """The person to research for this deal, from its outreach log, or None."""
-    named = [r for r in reachouts if _usable_name(r.person)]
+    named = [r for r in reachouts if usable_name(r.person)]
     if not named or not company:
         return None
     newest = sorted(named, key=lambda r: r.on or date.min, reverse=True)
     pick = next((r for r in newest if (r.role or "").strip().lower() == "customer"), newest[0])
     designation = scrub(" ".join(pick.designation.split())) if pick.designation else None
-    return Contact(name=_usable_name(pick.person), designation=designation or None, company=company)
+    return Contact(name=usable_name(pick.person), designation=designation or None, company=company)
 
 
 def fresh_persona(session: Session, key: str, now: datetime, days: int) -> ContactPersona | None:
