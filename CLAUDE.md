@@ -137,6 +137,11 @@ account-fit and stakeholder logic is copied into this codebase, not called over 
   persona or QC. Its own tests are copied to `tests/icp/` and must keep passing; `tests/icp/conftest.py`
   makes every Zoho/Setu read hermetic. Results are cached per company in `company_icp` for
   ICP_CACHE_DAYS (28); a first score takes minutes per company (Exa research).
+- **Shared ICP scores:** `ICP_SHARED_DB_URL` is a Postgres shared with other Practus agents
+  (`sources/icp_shared.py`, table `company_icp`, insert-only). Order per company: our `company_icp`,
+  then the shared DB (a hit is copied into our history), then our own scoring, whose usable result is
+  published back. Unset or unreachable = local only; recorded as `stats.sources.icp_shared`, never fails a run.
+- **Run progress:** `stats.phases` holds each phase's start and end; `RunNow.tsx` renders the step list from it (polled every 2s).
 - **LLM observability:** follow the Practus platform convention. Every agent uses the same shared
   Langfuse project and keys (`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASEURL`), and
   agents are told apart by a tag in code. Ours is `rasa-incanta`. Tracing is a silent no-op when unset.

@@ -72,43 +72,83 @@ export function RunNowButton({ running, starting, onClick }: { running: boolean;
   )
 }
 
-const PHASE_LABEL: Record<string, string> = {
-  pull: 'Pulling deals from Zoho, Setu and Read.ai',
-  mail: 'Searching Outlook mail',
-  capability: 'Matching Setu case studies',
-  icp: 'Scoring companies (ICP)',
-  persona: 'Researching contacts (Exa)',
-  cards: 'Building context cards',
-  nba: 'Drafting actions',
-}
+type Step = { key: string; doing: string; done: string; noun: string }
+
+// In the order the run works through them (api/engine/run.py).
+const STEPS: Step[] = [
+  { key: 'pull', doing: 'Pulling deals from Zoho', done: 'Pulled deals from Zoho', noun: 'deals' },
+  { key: 'mail', doing: 'Searching Outlook mail', done: 'Searched Outlook mail', noun: 'deals' },
+  { key: 'capability', doing: 'Matching Setu case studies', done: 'Matched Setu case studies', noun: 'deals' },
+  { key: 'icp', doing: 'Scoring ICP', done: 'Scored ICP', noun: 'companies' },
+  { key: 'persona', doing: 'Researching contacts', done: 'Researched contacts', noun: 'contacts' },
+  { key: 'cards', doing: 'Building context cards', done: 'Built context cards', noun: 'deals' },
+  { key: 'nba', doing: 'Drafting actions', done: 'Drafted actions', noun: 'deals' },
+]
 
 /** done / total for the phase that is running, when that phase counts anything. */
-function phaseCounts(run: RunView): [number, number] | null {
+function phaseCounts(run: RunView, key: string): [number, number] | null {
   const s = run.stats
-  if (s.phase === 'capability' && s.capability_to_do !== undefined) return [s.capability_done ?? 0, s.capability_to_do]
-  if (s.phase === 'icp' && s.icp_to_score) return [s.icp_done ?? 0, s.icp_to_score]
-  if (s.phase === 'persona' && s.persona_to_do) return [s.persona_done ?? 0, s.persona_to_do]
-  if (s.phase === 'nba' && s.nba_to_draft !== undefined) return [s.nba_done ?? 0, s.nba_to_draft]
+  if (key === 'capability' && s.capability_to_do !== undefined) return [s.capability_done ?? 0, s.capability_to_do]
+  if (key === 'icp' && s.icp_to_score) return [s.icp_done ?? 0, s.icp_to_score]
+  if (key === 'persona' && s.persona_to_do) return [s.persona_done ?? 0, s.persona_to_do]
+  if (key === 'nba' && s.nba_to_draft !== undefined) return [s.nba_done ?? 0, s.nba_to_draft]
   return null
 }
 
+function seconds(from?: string, to?: string | number): number | null {
+  if (!from) return null
+  const end = typeof to === 'number' ? to : to ? Date.parse(to) : NaN
+  return Number.isNaN(end) ? null : Math.max(0, Math.round((end - Date.parse(from)) / 1000))
+}
+
+function duration(s: number): string {
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`
+}
+
+/** Time left, once at least one item has finished to measure the pace by. */
+function remaining(startedAt: string | undefined, counts: [number, number] | null, now: number): string | null {
+  const elapsed = seconds(startedAt, now)
+  if (!counts || elapsed === null || counts[0] === 0 || counts[0] >= counts[1]) return null
+  const left = Math.round((elapsed / counts[0]) * (counts[1] - counts[0]))
+  return left < 60 ? '~1 min left' : `~${Math.round(left / 60)} min left`
+}
+
 function Progress({ run }: { run: RunView }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), POLL_MS)
+    return () => window.clearInterval(t)
+  }, [])
   const phase = run.stats.phase ?? 'pull'
-  const counts = phaseCounts(run)
-  const share = counts ? (counts[1] === 0 ? 1 : Math.min(counts[0] / counts[1], 1)) : 0
-  const noun = phase === 'icp' ? 'companies' : phase === 'persona' ? 'contacts' : 'deals'
-  const label = `${PHASE_LABEL[phase] ?? 'Working'}${counts ? `: ${counts[0]} of ${counts[1]} ${noun}` : ''}`
+  const current = STEPS.findIndex((s) => s.key === phase)
+  const phases = run.stats.phases ?? {}
+  const sources = run.stats.sources ?? {}
   return (
-    <div>
-      <div role="progressbar" aria-label="Run progress" aria-valuemin={0} aria-valuemax={counts ? counts[1] : undefined}
-        aria-valuenow={counts ? counts[0] : undefined} aria-valuetext={label} className="h-1.5 w-full bg-line">
-        <div className="h-full bg-teal" style={{ width: `${Math.round(share * 100)}%` }} />
-      </div>
-      <p className="t-meta m-0 mt-1.5">{label}.</p>
+    <ol aria-label="Run progress" className="m-0 list-none p-0">
+      {STEPS.map((step, i) => {
+        const state = i < current ? 'done' : i === current ? 'current' : 'todo'
+        const counts = state === 'current' ? phaseCounts(run, step.key) : null
+        const took = state === 'done' ? seconds(phases[step.key]?.started_at, phases[step.key]?.finished_at) : null
+        const eta = state === 'current' ? remaining(phases[step.key]?.started_at, counts, now) : null
+        const skipped = state === 'done' && step.key === 'mail' && sources.outlook && sources.outlook !== 'ok'
+        const label = state === 'done' ? step.done : step.doing
+        return (
+          <li key={step.key} aria-current={state === 'current' ? 'step' : undefined}
+            className={`t-meta m-0 flex items-baseline gap-2 py-0.5 ${state === 'todo' ? 'opacity-60' : ''}`}>
+            <span aria-hidden className="w-4 shrink-0 text-center">{state === 'done' ? '✓' : state === 'current' ? '●' : '○'}</span>
+            <span className="flex-1">
+              {label}
+              {counts ? `: ${counts[0]} of ${counts[1]} ${step.noun}` : ''}
+              {skipped ? ' (skipped: Outlook is not available, deals are flagged no mail)' : ''}
+            </span>
+            <span className="shrink-0 tabular-nums">{took !== null ? duration(took) : eta ?? ''}</span>
+          </li>
+        )
+      })}
       {phase === 'icp' && (
-        <p className="t-meta m-0 mt-1">Each new company takes several minutes; scores are reused for four weeks.</p>
+        <li className="t-meta m-0 mt-1 pl-6">Each new company takes several minutes; scores are reused for four weeks.</li>
       )}
-    </div>
+    </ol>
   )
 }
 

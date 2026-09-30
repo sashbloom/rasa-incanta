@@ -46,6 +46,15 @@ def fresh_icp(session: Session, key: str, now: datetime, days: int, *, require_e
     return None
 
 
+def adopt_shared(session: Session, company_name: str, shared) -> CompanyIcp:
+    """Keep a score another agent shared in our own history, so later runs find it locally."""
+    row = CompanyIcp(company_key=company_key(company_name), company_name=company_name,
+                     computed_at=shared.computed_at, status=shared.status, account_fit=shared.account_fit,
+                     stakeholder=shared.stakeholder, result=shared.result, data_gaps=list(shared.data_gaps))
+    session.add(row)
+    return row
+
+
 def _trim(text: str, limit: int = MAX_RATIONALE_CHARS) -> str:
     text = " ".join((text or "").split())
     return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "..."

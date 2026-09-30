@@ -48,7 +48,7 @@ from api.engine.nba import generate_nba
 from api.icp import tracing
 from api.models import ContextCard, Deal, DealSnapshot, Decision, Recommendation, Run
 from api.persona.generator import NoSourceMaterial
-from api.sources import outlook, readai
+from api.sources import icp_shared, outlook, readai
 from api.sources.setu import SetuResult, fetch_case_studies
 from api.sources.zoho import ZohoDeal, ZohoResult, fetch_deals, jsonable
 
@@ -147,9 +147,17 @@ def run_week(
         session.commit()
 
     tracing.current_run_id.set(f"rasa-incanta:run:{run.id}")  # the Langfuse session for this run
-    stats: dict[str, Any] = {"phase": "pull", "sources": {}, "nba_created": 0, "nba_kept": 0, "nba_skipped": []}
+    stats: dict[str, Any] = {"phase": "pull", "sources": {}, "nba_created": 0, "nba_kept": 0, "nba_skipped": [],
+                             "phases": {"pull": {"started_at": now.isoformat()}}}
 
     def save(**updates) -> None:
+        if updates.get("phase") and updates["phase"] != stats.get("phase"):
+            # when each phase started and ended, for the board's step list
+            stamp = datetime.now(timezone.utc).isoformat()
+            phases = stats.setdefault("phases", {})
+            if stats.get("phase") in phases:
+                phases[stats["phase"]]["finished_at"] = stamp
+            phases[updates["phase"]] = {"started_at": stamp}
         stats.update(updates)
         run.stats = copy.deepcopy(stats)  # a snapshot: sharing lists with stats would hide later changes
         session.commit()
@@ -191,8 +199,13 @@ def run_week(
 
     # ---------------------------------------------------------------- mail
     mail_fetcher = fetch_mail or _default_fetch_mail
-    mail = mail_fetcher(session, settings, [(z.zoho_id, z.account_name or z.name, identities[z.zoho_id])
-                                            for z in zoho.deals], mail_belongs)
+    try:
+        mail = mail_fetcher(session, settings, [(z.zoho_id, z.account_name or z.name, identities[z.zoho_id])
+                                                for z in zoho.deals], mail_belongs)
+    except Exception as exc:  # a dead Outlook sign-in must never stop the run: every card gets no_mail
+        logger.exception("Outlook mail fetch failed")
+        session.rollback()
+        mail = outlook.MailResult(error=f"Outlook mail could not be read ({type(exc).__name__}).")
     stats["sources"]["outlook"] = "ok" if mail.ok else mail.error
     mail_points: dict[str, dict[int, list[str]]] = {}
     with_mail = [z for z in zoho.deals if mail.by_deal.get(z.zoho_id)]
@@ -230,12 +243,22 @@ def run_week(
     for z in zoho.deals:
         companies.setdefault(icp_signal.company_key(z.account_name or z.name), z.account_name or z.name)
     stale = []
+    shared_reused, shared_error = 0, None
     for key, company in companies.items():
-        row = icp_signal.fresh_icp(session, key, now, settings.icp_cache_days, require_exa=bool(settings.exa_api_key))
+        require_exa = bool(settings.exa_api_key)
+        row = icp_signal.fresh_icp(session, key, now, settings.icp_cache_days, require_exa=require_exa)
+        if row is None and icp_shared.configured(settings):
+            found = icp_shared.find(settings, key, now, settings.icp_cache_days, require_exa=require_exa)
+            if not found.ok:
+                shared_error = found.error  # unreachable: fall back to our own scoring for this company
+            elif found.score is not None:
+                row = icp_signal.adopt_shared(session, company, found.score)
+                shared_reused += 1
         if row is not None:
             icp_by_key[key] = (row.account_fit, row.stakeholder, row.status)
         else:
             stale.append((key, company))
+    session.commit()
     score_fn = score_company_fn
     if score_fn is None and settings.anthropic_api_key:
         from api.icp.pipeline import score_company
@@ -252,6 +275,14 @@ def run_week(
                     row = icp_signal.record(session, company, now, result=future.result(),
                                             exa_research=bool(settings.exa_api_key))
                     icp_by_key[key] = (row.account_fit, row.stakeholder, row.status)
+                    if icp_shared.configured(settings):
+                        why = icp_shared.publish(settings, key, icp_shared.SharedScore(
+                            company_name=company, computed_at=now, status=row.status, account_fit=row.account_fit,
+                            stakeholder=row.stakeholder, result=row.result, data_gaps=row.data_gaps))
+                        if why:
+                            shared_error = why
+                        elif row.status in icp_shared.REUSABLE:
+                            stats["icp_shared_published"] = stats.get("icp_shared_published", 0) + 1
                 except Exception as exc:
                     logger.exception("ICP scoring failed for %s", company)
                     icp_signal.record(session, company, now, error=f"{type(exc).__name__}: {str(exc)[:300]}")
@@ -264,6 +295,16 @@ def run_week(
                                    else f"{stats['icp_failed']} companies could not be scored ({summary})")
     else:
         stats["sources"]["icp"] = "ok (all cached)"
+
+    if not icp_shared.configured(settings):
+        stats["sources"]["icp_shared"] = "not configured (ICP_SHARED_DB_URL); using the local cache only"
+    elif shared_error:
+        stats["sources"]["icp_shared"] = (f"unreachable or failed ({shared_error}); used the local cache and our own "
+                                          f"scoring ({shared_reused} reused, {stats.get('icp_shared_published', 0)} published)")
+    else:
+        stats["sources"]["icp_shared"] = f"ok ({shared_reused} reused, {stats.get('icp_shared_published', 0)} published)"
+    stats["icp_shared_reused"] = shared_reused
+    save()
 
     # ---------------------------------------------------------------- persona
     contacts: dict[str, persona_signal.Contact] = {}

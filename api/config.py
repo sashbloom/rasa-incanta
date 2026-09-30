@@ -114,6 +114,10 @@ class Settings(BaseSettings):
     setu_pgpassword: str = ""
     setu_pgsslmode: str = "require"
 
+    # ICP scores shared with other Practus agents (Postgres): checked before we score a company,
+    # written to after. Unset = local company_icp only.
+    icp_shared_db_url: str = ""
+
     @property
     def is_local(self) -> bool:
         return self.environment.strip().lower() == "local"

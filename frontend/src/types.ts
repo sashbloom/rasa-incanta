@@ -24,6 +24,7 @@ export type RunView = {
   stats: {
     phase?: 'pull' | 'mail' | 'capability' | 'icp' | 'persona' | 'cards' | 'nba' | 'done'
     sources?: Record<string, string>
+    phases?: Record<string, { started_at: string; finished_at?: string }>
     deals?: number
     capability_done?: number
     capability_to_do?: number
