@@ -18,6 +18,7 @@ import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import Session
 
@@ -27,6 +28,7 @@ from api.db import get_session, get_sessionmaker
 from api.domain.matching import has_industry, label_matches, resolve_case_study_industry
 from api.domain.stages import board_for
 from api.domain.weeks import week_start
+from api.engine import icp_signal
 from api.engine.persona_signal import usable_name
 from api.engine.run import run_week
 from api.icp import setu_db, setu_embeddings
@@ -185,6 +187,23 @@ def _richness(z, reachouts: list, setu_industries: list[str]) -> dict:
     score = reachout_count + (2 if industry_match else 0) + filled
     return {"deal": z, "board": board, "reachout_count": reachout_count, "contact_name": contact_name,
            "industry_match": industry_match, "filled_field_count": filled, "score": score}
+
+
+class ImportedIcpScore(BaseModel):
+    company: str = Field(min_length=1, max_length=300)
+    verdict: str = Field(min_length=1, max_length=200)
+    right_to_win: str | None = Field(default=None, max_length=1000)
+    scored_at: datetime
+
+
+@fastapi_app.post("/api/icp/import", dependencies=[Depends(require_debug_key)])
+def import_icp_scores(scores: list[ImportedIcpScore], session: Session = Depends(get_session)) -> dict:
+    """Load ICP scores made elsewhere into company_icp (body: a JSON list of {company, verdict,
+    right_to_win, scored_at}). A company already scored within ICP_CACHE_DAYS is skipped, and so is a
+    repeat within the same request. Append-only: nothing is overwritten. Gated like every debug route."""
+    imported, skipped = icp_signal.import_scores(session, [s.model_dump() for s in scores],
+                                                 datetime.now(timezone.utc), get_settings().icp_cache_days)
+    return {"imported": imported, "skipped": skipped}
 
 
 @fastapi_app.get("/api/debug/richest-deals", dependencies=[Depends(require_debug_key)])

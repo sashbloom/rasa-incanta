@@ -41,9 +41,38 @@ def fresh_icp(session: Session, key: str, now: datetime, days: int, *, require_e
         computed = row.computed_at if row.computed_at.tzinfo else row.computed_at.replace(tzinfo=timezone.utc)
         if computed < cutoff:
             return None
-        if row.status in REUSABLE and (not require_exa or (row.result or {}).get("exa_research")):
+        result = row.result or {}
+        if row.status in REUSABLE and (not require_exa or result.get("exa_research") or result.get("imported")):
             return row
     return None
+
+
+def import_scores(session: Session, entries: list[dict], now: datetime, days: int) -> tuple[int, int]:
+    """Add scores made elsewhere (company, verdict, right_to_win, scored_at) to company_icp. A company
+    with a reusable score younger than `days` is skipped, and so is a repeat within the same batch.
+    Returns (imported, skipped). Rows are append-only and marked `result.imported`, which is also
+    what lets them count as researched when EXA_API_KEY is set: the score is trusted as given."""
+    imported = skipped = 0
+    for entry in entries:
+        name = entry["company"].strip()
+        if fresh_icp(session, company_key(name), now, days) is not None:
+            skipped += 1
+            continue
+        scored_at = entry["scored_at"]
+        scored_at = scored_at if scored_at.tzinfo else scored_at.replace(tzinfo=timezone.utc)
+        verdict, right_to_win = entry["verdict"].strip(), (entry.get("right_to_win") or "").strip()
+        value = f"ICP recommendation: {verdict}" + (f". Right to win: {right_to_win}" if right_to_win else "")
+        session.add(CompanyIcp(
+            company_key=company_key(name), company_name=name, computed_at=scored_at, status="scored",
+            account_fit={"status": "scored", "recommendation": verdict, "right_to_win": right_to_win or None,
+                         "imported": True, "computed_at": scored_at.isoformat(),
+                         "facts": [_fact("recommendation", "Recommendation", value, scored_at.date().isoformat())]},
+            stakeholder={}, result={"imported": True, "verdict": verdict, "right_to_win": right_to_win or None},
+            data_gaps=[]))
+        session.flush()  # so a repeat of this company later in the batch is skipped
+        imported += 1
+    session.commit()
+    return imported, skipped
 
 
 def adopt_shared(session: Session, company_name: str, shared) -> CompanyIcp:

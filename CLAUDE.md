@@ -183,7 +183,7 @@ account-fit and stakeholder logic is copied into this codebase, not called over 
   recorded fixtures, never live calls. Security checks must be able to fail: traversal uses 3+
   levels against the raw ASGI path, scoping uses two restricted users who see different deals.
 - Debug endpoints (raw source dumps, internal tooling — currently `GET /api/setu/case-studies`,
-  `/api/setu/enriched` and `/api/debug/richest-deals`): gate every one behind
+  `/api/setu/enriched`, `/api/debug/richest-deals` and `POST /api/icp/import`): gate every one behind
   `dependencies=[Depends(require_debug_key)]` (`api/main.py`). `X-Debug-Key: <SESSION_SECRET>` or
   a 404, indistinguishable from a route that doesn't exist — never a 401/403 that confirms
   something is there. A header, not a query parameter, so the key never lands in a URL that gets
