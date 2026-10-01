@@ -18,7 +18,7 @@ import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import Session
 
@@ -190,16 +190,20 @@ def _richness(z, reachouts: list, setu_industries: list[str]) -> dict:
 
 
 class ImportedIcpScore(BaseModel):
-    company: str = Field(min_length=1, max_length=300)
+    """Pratham's format. Extra fields (gate_flag and the like) are ignored. The first names we built
+    the endpoint with (company, scored_at) still work."""
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    company: str = Field(min_length=1, max_length=300, validation_alias=AliasChoices("company_name", "company"))
     verdict: str = Field(min_length=1, max_length=200)
     right_to_win: str | None = Field(default=None, max_length=1000)
-    scored_at: datetime
+    scored_at: datetime = Field(validation_alias=AliasChoices("score_date", "scored_at"))
 
 
 @fastapi_app.post("/api/icp/import", dependencies=[Depends(require_debug_key)])
 def import_icp_scores(scores: list[ImportedIcpScore], session: Session = Depends(get_session)) -> dict:
-    """Load ICP scores made elsewhere into company_icp (body: a JSON list of {company, verdict,
-    right_to_win, scored_at}). A company already scored within ICP_CACHE_DAYS is skipped, and so is a
+    """Load ICP scores made elsewhere into company_icp (body: a JSON list of {company_name, verdict,
+    right_to_win, score_date}). A company already scored within ICP_CACHE_DAYS is skipped, and so is a
     repeat within the same request. Append-only: nothing is overwritten. Gated like every debug route."""
     imported, skipped = icp_signal.import_scores(session, [s.model_dump() for s in scores],
                                                  datetime.now(timezone.utc), get_settings().icp_cache_days)

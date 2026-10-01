@@ -15,6 +15,18 @@ def entry(company, days_ago=2, verdict="Pursue", right_to_win="Strong operations
             "scored_at": (NOW - timedelta(days=days_ago)).isoformat()}
 
 
+def prathams(company_name, score_date="2026-09-20", **extra):
+    return {"company_name": company_name, "verdict": "Pursue", "right_to_win": "Strong fit",
+            "score_date": score_date, **extra}
+
+
+def test_pratham_format_is_mapped_and_extra_fields_are_ignored(client, debug_key):
+    body = [prathams("Acme Foods", gate_flag="G7", anything_else={"x": 1}), prathams("Northwind", "2026-09-22T10:00:00Z")]
+    assert post(client, body, debug_key).json() == {"imported": 2, "skipped": 0}
+    acme = next(r for r in rows() if r.company_name == "Acme Foods")
+    assert acme.computed_at.date().isoformat() == "2026-09-20" and "gate_flag" not in str(acme.result)
+
+
 def post(client, body, key):
     return client.post("/api/icp/import", json=body, headers={"X-Debug-Key": key})
 
