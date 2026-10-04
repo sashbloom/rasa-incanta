@@ -198,15 +198,23 @@ class Recommendation(Timestamped, Base):
 
 
 class DealReview(Timestamped, Base):
-    """A user's review of one deal for one week: their rationale and any action of their own."""
+    """A user's review of one deal for one week: their rationale and any action of their own. Append-only:
+    editing a decision adds a row with the next `version`; the highest version is current."""
 
     __tablename__ = "deal_reviews"
-    __table_args__ = (UniqueConstraint("week_start", "deal_id", "user_id"),)
+    __table_args__ = (
+        UniqueConstraint("week_start", "deal_id", "user_id", "version", name="uq_deal_reviews_week_deal_user_version"),
+        # The board is open (no sign-in), so a review has no user yet; NULLs never collide in the
+        # constraint above, so this index is what keeps versions unique for open-board reviews.
+        Index("uq_deal_reviews_open_board_version", "week_start", "deal_id", "version", unique=True,
+              sqlite_where=text("user_id IS NULL"), postgresql_where=text("user_id IS NULL")),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     week_start: Mapped[date] = mapped_column(Date, index=True)
     deal_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("deals.id"), index=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), index=True)  # None while the board is open
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")  # 1, then +1 per edit
     rationale: Mapped[str | None] = mapped_column(Text)
     own_action: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="open")  # open | done

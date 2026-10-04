@@ -5,6 +5,9 @@ export type DealRow = {
   account_name: string | null
   owner_name: string | null
   has_actions: boolean
+  decided: boolean
+  new: boolean
+  moved: boolean
 }
 
 export type BoardView = {
@@ -75,6 +78,37 @@ export type Action = {
   sme: string | null
   proof: { name: string; why?: string | null } | null
   evidence: Evidence[]
+  selected: boolean | null // null until the week is decided
+}
+
+export type DecisionVersion = {
+  version: number
+  rationale: string | null
+  own_action: string | null
+  decided_at: string
+  selected_ids: string[]
+}
+
+/** The current decision (the highest version) and the versions it replaced, newest first. */
+export type SavedDecision = DecisionVersion & { week_start: string; earlier: DecisionVersion[] }
+
+export type HistoryWeek = {
+  week_start: string
+  decided: boolean
+  rationale: string | null
+  own_action: string | null
+  actions: { id: string; objective: Objective; action: string; why_now: string; selected: boolean | null }[]
+}
+
+export type SummaryDeal = { id: string; name: string; stage: string; board: string; from?: string; to?: string }
+export type SummaryCount = { count: number; deals: SummaryDeal[] }
+export type SummaryView = {
+  week_start: string
+  comparison: boolean
+  new: SummaryCount
+  moved: SummaryCount
+  pending: SummaryCount
+  decided: number
 }
 
 export type IcpSummary = {
@@ -105,6 +139,8 @@ export type DealDetail = {
   segments: Segment[]
   actions: Action[]
   actions_week: string | null
+  decision: SavedDecision | null
+  history: HistoryWeek[]
 }
 
 export type SourcesView = {

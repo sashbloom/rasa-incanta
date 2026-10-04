@@ -1,14 +1,21 @@
 import { BrowserRouter, Link, Route, Routes, useLocation } from 'react-router-dom'
 import { MyWeek } from './pages/MyWeek'
 import { Sources } from './pages/Sources'
+import { Summary } from './pages/Summary'
 
 // Derived from Vite's base (/reports/rasa-incanta/), never a second copy of the string.
 export const BASENAME = import.meta.env.BASE_URL.replace(/\/$/, '')
 
 function Rail() {
-  // "My week" covers the board and every deal under it; "Sources" is its own page.
-  const onSources = useLocation().pathname.startsWith('/sources')
-  const items: [string, string, boolean][] = [['/', 'My week', !onSources], ['/sources', 'Sources', onSources]]
+  // "My week" covers the board and every deal under it; Summary and Sources are their own pages.
+  const path = useLocation().pathname
+  const onSummary = path.startsWith('/summary')
+  const onSources = path.startsWith('/sources')
+  const items: [string, string, boolean][] = [
+    ['/', 'My week', !onSources && !onSummary],
+    ['/summary', 'Summary', onSummary],
+    ['/sources', 'Sources', onSources],
+  ]
   return (
     <header className="flex shrink-0 flex-col bg-navy px-4 py-4 text-paper md:w-[220px] md:px-6 md:py-7">
       <p className="m-0 font-serif text-xl leading-[26px] font-bold md:mb-8">Rasa Incanta</p>
@@ -34,6 +41,7 @@ export function App() {
           <Routes>
             <Route path="/" element={<MyWeek />} />
             <Route path="/deals/:dealId" element={<MyWeek />} />
+            <Route path="/summary" element={<Summary />} />
             <Route path="/sources" element={<Sources />} />
             <Route path="*" element={<MyWeek />} />
           </Routes>

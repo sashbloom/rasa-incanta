@@ -7,7 +7,7 @@ in the schema for that).
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import Select, select
@@ -18,6 +18,7 @@ from api.domain.gaps import Gap, gap_copy
 from api.domain.stages import Board, stage_position
 from api.domain.weeks import week_start
 from api.models import ContextCard, Deal, Recommendation, Run
+from api.weekly import change_flags, decided_deal_ids, decision_for, history_for, latest_action_weeks
 
 BOARD_ORDER = (Board.PIPELINE, Board.PRE_PIPELINE, Board.PROSPECT)
 BOARD_LABEL = {Board.PIPELINE: "Pipeline", Board.PRE_PIPELINE: "Pre-Pipeline", Board.PROSPECT: "Prospect"}
@@ -55,6 +56,9 @@ def week_view(session: Session, settings: Settings, now: datetime | None = None)
         .where(Run.week_start == week, Recommendation.deal_id.in_([d.id for d in deals]))
     )) if deals else set()
 
+    comparison, flags = change_flags(session, settings, now)
+    decided = decided_deal_ids(session, latest_action_weeks(session))
+
     boards = []
     for board in BOARD_ORDER:
         on_board = [d for d in deals if d.board == board.value]
@@ -62,7 +66,8 @@ def week_view(session: Session, settings: Settings, now: datetime | None = None)
         for d in sorted(on_board, key=lambda d: (stage_position(d.stage) or 0, d.name.lower())):
             stages.setdefault(d.stage, []).append({
                 "id": str(d.id), "name": d.name, "account_name": d.account_name, "owner_name": d.owner_name,
-                "has_actions": d.id in with_actions,
+                "has_actions": d.id in with_actions, "decided": d.id in decided,
+                "new": flags.get(d.id, {}).get("new", False), "moved": bool(flags.get(d.id, {}).get("moved")),
             })
         boards.append({
             "id": board.value, "label": BOARD_LABEL[board], "count": len(on_board),
@@ -160,6 +165,10 @@ def deal_view(session: Session, deal_id: uuid.UUID) -> dict | None:
                                              Recommendation.deal_id == deal.id).order_by(Recommendation.rank)
             )
         ]
+    decision = decision_for(session, deal.id, date.fromisoformat(actions_week) if actions_week else None)
+    ticked = set(decision["selected_ids"]) if decision else set()
+    for a in actions:
+        a["selected"] = (a["id"] in ticked) if decision else None
     state = (card.deal_state if card else {}) or {}
     fit = (card.account_fit if card else {}) or {}
     icp = {k: fit.get(k) for k in ("status", "recommendation", "provisional", "client_total", "client_verdict",
@@ -171,4 +180,32 @@ def deal_view(session: Session, deal_id: uuid.UUID) -> dict | None:
         "ep_involved": deal.ep_involved or [], "el_involved": deal.el_involved or [],
         "days_in_stage": state.get("days_in_stage"), "last_touch": state.get("last_touch"),
         "segments": _segments(card), "actions": actions, "actions_week": actions_week,
+        "decision": decision,
+        "history": history_for(session, deal.id, date.fromisoformat(actions_week) if actions_week else None),
+    }
+
+
+def summary_view(session: Session, settings: Settings, now: datetime | None = None) -> dict:
+    """The week in three counts, each with the deals behind it. The same flags drive the My week filters
+    (`?filter=new|moved|pending`), so a count and the list it links to always agree."""
+    now = now or datetime.now(timezone.utc)
+    week = week_start(now, settings.timezone)
+    comparison, flags = change_flags(session, settings, now)
+    deals = list(session.scalars(visible_deals().order_by(Deal.name)))
+    with_actions = set(session.scalars(
+        select(Recommendation.deal_id).join(Run, Run.id == Recommendation.run_id).where(Run.week_start == week)))
+    decided = decided_deal_ids(session, latest_action_weeks(session))
+
+    def row(d: Deal, **extra) -> dict:
+        return {"id": str(d.id), "name": d.name, "stage": d.stage, "board": d.board, **extra}
+
+    new = [row(d) for d in deals if flags.get(d.id, {}).get("new")]
+    moved = [row(d, **flags[d.id]["moved"]) for d in deals if flags.get(d.id, {}).get("moved")]
+    pending = [row(d) for d in deals if d.id in with_actions and d.id not in decided]
+    return {
+        "week_start": week.isoformat(), "comparison": comparison,
+        "new": {"count": len(new), "deals": new},
+        "moved": {"count": len(moved), "deals": moved},
+        "pending": {"count": len(pending), "deals": pending},
+        "decided": sum(1 for d in deals if d.id in with_actions and d.id in decided),
     }

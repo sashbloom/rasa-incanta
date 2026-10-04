@@ -3,6 +3,9 @@ const API_BASE: string =
   import.meta.env.VITE_API_URL ??
   (import.meta.env.PROD ? import.meta.env.BASE_URL.replace(/\/$/, '') : 'http://localhost:8000')
 
+/** An address on the API, for a plain link such as a file download. Calls still go through apiFetch. */
+export const apiUrl = (path: string): string => API_BASE + path
+
 export class ApiError extends Error {
   constructor(public status: number, message: string, public body: unknown = null) {
     super(message)

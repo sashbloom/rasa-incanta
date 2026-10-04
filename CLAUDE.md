@@ -141,6 +141,15 @@ account-fit and stakeholder logic is copied into this codebase, not called over 
   (`sources/icp_shared.py`, table `company_icp`, insert-only). Order per company: our `company_icp`,
   then the shared DB (a hit is copied into our history), then our own scoring, whose usable result is
   published back. Unset or unreachable = local only; recorded as `stats.sources.icp_shared`, never fails a run.
+- **Decisions (`api/weekly.py`):** `POST /api/deals/{id}/decisions` (ticks, required rationale, optional own
+  action) writes one `deal_reviews` row plus a `decisions` row per action, ticked or not. A decision belongs to
+  the week of the actions' run, can be edited: an edit appends a `deal_reviews` row with the next `version` for the same deal and week (the
+  highest is current, earlier ones are shown under it, nothing is overwritten). The board is open, so
+  `deal_reviews.user_id` is NULL (migrations 0006-0007; a partial unique index on week, deal, version covers
+  NULL users); set it when sign-in returns. `GET /api/deal` carries `decision` and `history` (every earlier week, the page
+  shows four). `GET /api/summary` and the My week `?filter=new|moved|pending` share `change_flags`, so a count
+  and its list agree; new/moved need an earlier week of snapshots. `GET /api/export?board=&format=xlsx|csv`
+  (`api/export.py`) follows Mahak's workbook column order, one row per action; free text that looks like a formula is prefixed with `'`.
 - **Run progress:** `stats.phases` holds each phase's start and end; `RunNow.tsx` renders the step list from it (polled every 2s).
 - **LLM observability:** follow the Practus platform convention. Every agent uses the same shared
   Langfuse project and keys (`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASEURL`), and

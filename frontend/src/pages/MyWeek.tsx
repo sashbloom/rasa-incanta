@@ -1,12 +1,41 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { apiFetch } from '../api'
+import { apiFetch, apiUrl } from '../api'
 import { DealDetail } from '../components/DealDetail'
 import { RunNowButton, RunStatus, useRun } from '../components/RunNow'
 import { longDate } from '../format'
-import type { BoardView, WeekView } from '../types'
+import type { BoardView, DealRow, WeekView } from '../types'
 
 const BOARDS: BoardView['id'][] = ['pipeline', 'pre_pipeline', 'prospect']
+
+// The Summary's counts link here with ?filter=; each filter is the same flag the count is made from.
+const FILTERS: Record<string, { label: string; keep: (d: DealRow) => boolean }> = {
+  new: { label: 'New deals this week', keep: (d) => d.new },
+  moved: { label: 'Deals that moved stage this week', keep: (d) => d.moved },
+  pending: { label: 'Decisions pending', keep: (d) => d.has_actions && !d.decided },
+}
+
+/** State marks at the right edge of a deal row: new, moved, and whether this week's actions are decided.
+ *  Always text as well as a dot: colour is never the only cue. */
+function Marks({ deal }: { deal: DealRow }) {
+  const marks = [deal.new && 'New', deal.moved && 'Moved'].filter(Boolean) as string[]
+  return (
+    <span className="t-meta flex shrink-0 items-center gap-2">
+      {marks.map((m) => <span key={m}>{m}</span>)}
+      {deal.decided ? (
+        <span title="Decided for the week">
+          <span aria-hidden="true" className="mr-1 inline-block h-2 w-2 rounded-full bg-green align-middle" />
+          Decided
+        </span>
+      ) : deal.has_actions ? (
+        <span title="Actions ready this week">
+          <span aria-hidden="true" className="mr-1 inline-block h-2 w-2 rounded-full bg-teal-web align-middle" />
+          Actions
+        </span>
+      ) : null}
+    </span>
+  )
+}
 
 /** My week: board tabs, the deal list grouped by stage, and the open deal's detail. */
 export function MyWeek() {
@@ -22,11 +51,26 @@ export function MyWeek() {
     apiFetch<WeekView>('/api/week').then(setWeek).catch((e: Error) => setError(e.message))
   }, [reloadKey])
 
+  const filterKey = params.get('filter') ?? ''
+  const filter = FILTERS[filterKey]
+  // With a filter on, boards keep only the matching deals (and their counts follow).
+  const boards = useMemo(() => {
+    if (!week || !filter) return week?.boards
+    return week.boards.map((b) => {
+      const stages = b.stages
+        .map((st) => ({ ...st, deals: st.deals.filter(filter.keep) }))
+        .filter((st) => st.deals.length > 0)
+        .map((st) => ({ ...st, count: st.deals.length }))
+      return { ...b, stages, count: stages.reduce((n, st) => n + st.count, 0) }
+    })
+  }, [week, filter])
+
   const boardParam = params.get('board') as BoardView['id'] | null
-  const boardId = boardParam && BOARDS.includes(boardParam) ? boardParam : 'pipeline'
-  const board = week?.boards.find((b) => b.id === boardId)
+  const firstWithDeals = boards?.find((b) => b.count > 0)?.id
+  const boardId = boardParam && BOARDS.includes(boardParam) ? boardParam : (filter && firstWithDeals) || 'pipeline'
+  const board = boards?.find((b) => b.id === boardId)
   const flat = useMemo(() => board?.stages.flatMap((s) => s.deals) ?? [], [board])
-  const query = `?board=${boardId}`
+  const query = `?board=${boardId}${filterKey ? `&filter=${filterKey}` : ''}`
 
   // j / k move between deals on the open board.
   useEffect(() => {
@@ -61,8 +105,8 @@ export function MyWeek() {
         </div>
         {week?.notice && <p className="mx-4 my-2 md:mx-6">{week.notice}</p>}
         <nav aria-label="Boards" className="flex gap-5 border-b border-line px-4 md:px-6">
-          {week?.boards.map((b) => (
-            <button key={b.id} type="button" onClick={() => setParams({ board: b.id })}
+          {boards?.map((b) => (
+            <button key={b.id} type="button" onClick={() => setParams(filterKey ? { board: b.id, filter: filterKey } : { board: b.id })}
               aria-current={b.id === boardId ? 'page' : undefined}
               className={`t-label -mb-px cursor-pointer border-0 border-b-2 bg-transparent px-0 py-2.5 text-navy ${
                 b.id === boardId ? 'border-teal' : 'border-transparent hover:border-line'}`}>
@@ -70,6 +114,20 @@ export function MyWeek() {
             </button>
           ))}
         </nav>
+        {filter && (
+          <p className="t-meta m-0 px-4 pt-3 md:px-6">
+            {filter.label}.{' '}
+            <Link to={`/?board=${boardId}`} className="text-teal hover:text-teal-deep">Show all deals</Link>
+          </p>
+        )}
+        {board && board.count > 0 && (
+          <p className="t-meta m-0 px-4 pt-3 md:px-6">
+            Export {board.label}:{' '}
+            <a href={apiUrl(`/api/export?board=${boardId}&format=xlsx`)} download className="text-teal hover:text-teal-deep">Excel</a>
+            {', '}
+            <a href={apiUrl(`/api/export?board=${boardId}&format=csv`)} download className="text-teal hover:text-teal-deep">CSV</a>
+          </p>
+        )}
         {!week ? (
           <p className="t-meta px-6 py-4">Loading this week's deals.</p>
         ) : !board || board.count === 0 ? (
@@ -88,12 +146,7 @@ export function MyWeek() {
                         <span className="block truncate">{d.name}</span>
                         {d.owner_name && <span className="t-meta block">{d.owner_name}</span>}
                       </span>
-                      {d.has_actions && (
-                        <span className="t-meta shrink-0" title="Actions ready this week">
-                          <span aria-hidden="true" className="mr-1 inline-block h-2 w-2 rounded-full bg-teal-web align-middle" />
-                          Actions
-                        </span>
-                      )}
+                      <Marks deal={d} />
                     </Link>
                   </li>
                 ))}

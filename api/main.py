@@ -32,12 +32,14 @@ from api.engine import icp_signal
 from api.engine.persona_signal import usable_name
 from api.engine.run import run_week
 from api.icp import setu_db, setu_embeddings
-from api.models import Meeting, Run, SetuCaseStudyContext
+from api.models import Deal, Meeting, Run, SetuCaseStudyContext
 from api.prefix import MountUnderPrefix
 from api.sources import outlook, readai
 from api.sources.setu import fetch_case_studies
 from api.sources.zoho import fetch_deals
-from api.views import deal_view, deals_view, run_payload, week_view
+from api import export as board_export
+from api.views import BOARD_LABEL, BOARD_ORDER, deal_view, deals_view, run_payload, summary_view, visible_deals, week_view
+from api.weekly import save_decision
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("rasa_incanta")
@@ -91,6 +93,45 @@ def deal(deal_id: uuid.UUID, session: Session = Depends(get_session)) -> dict:
     if view is None:
         raise HTTPException(404, "Deal not found.")
     return view
+
+
+class DecisionIn(BaseModel):
+    selected: list[uuid.UUID] = Field(default_factory=list, max_length=20)  # the actions ticked
+    rationale: str = Field(max_length=4000)  # required: an empty one is a 422 with the message the form shows
+    own_action: str | None = Field(default=None, max_length=2000)
+
+
+@fastapi_app.post("/api/deals/{deal_id}/decisions", status_code=201)
+def decide(deal_id: uuid.UUID, body: DecisionIn, session: Session = Depends(get_session)) -> dict:
+    """Save the decision on a deal's current actions: which were ticked, why, and an optional action of
+    the user's own. Once per deal and week; history is never edited. Returns the deal as GET /api/deals/{id}."""
+    deal_row = session.scalar(visible_deals().where(Deal.id == deal_id))
+    if deal_row is None:
+        raise HTTPException(404, "Deal not found.")
+    save_decision(session, deal_row, body.selected, body.rationale, body.own_action)
+    return deal_view(session, deal_id)
+
+
+@fastapi_app.get("/api/summary")
+def summary(session: Session = Depends(get_session)) -> dict:
+    return summary_view(session, get_settings())
+
+
+@fastapi_app.get("/api/export")
+def export_board(board: str, format: str = "xlsx", session: Session = Depends(get_session)) -> Response:
+    """One board as Excel (default) or CSV: deal fields, actions, ticks and rationale."""
+    if board not in {b.value for b in BOARD_ORDER}:
+        raise HTTPException(422, "board must be pipeline, pre_pipeline or prospect.")
+    if format not in ("xlsx", "csv"):
+        raise HTTPException(422, "format must be xlsx or csv.")
+    rows = board_export.rows_for(session, board)
+    name = f"rasa-incanta-{board.replace('_', '-')}-{datetime.now(timezone.utc):%Y-%m-%d}.{format}"
+    if format == "csv":
+        content, media = board_export.to_csv(rows), "text/csv; charset=utf-8"
+    else:
+        content = board_export.to_xlsx(rows, {b.value: label for b, label in BOARD_LABEL.items()}[board])
+        media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    return Response(content, media_type=media, headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @fastapi_app.get("/api/deals")
