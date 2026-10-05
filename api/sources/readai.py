@@ -8,7 +8,8 @@ refuses every delivery: a signature is the only thing that makes a public webhoo
 
 Stored per meeting: title, times, platform, report link, summary, participants (with their
 email domains, for matching to deals), action items, key questions, topics and chapter summaries.
-Transcripts are deliberately not stored: nothing uses them, and only excerpts ever go to a model.
+Webhook meetings keep no transcript. Uploaded past meetings (api/transcripts.py) keep theirs, but only a short
+excerpt ever reaches a card, so a whole transcript never goes to a model.
 
 Read.ai retries a failed delivery up to 6 times and dedupes on `request_id`; duplicates and
 `meeting_start` payloads are acknowledged without storing anything.
@@ -24,7 +25,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from api.models import Meeting
@@ -164,18 +165,24 @@ class MeetingRecord:
     action_items: tuple[str, ...]
     key_questions: tuple[str, ...]
     topics: tuple[str, ...]
+    source: str = "webhook"
+    transcript_excerpt: str | None = None  # the opening of an uploaded transcript; used only when there is no summary
+
+
+TRANSCRIPT_EXCERPT_CHARS = 2000  # all that is read back from a transcript
 
 
 def recent_meetings(session: Session, now: datetime, since_days: int = 180) -> list[MeetingRecord]:
     """Meetings from the last `since_days`, newest first (the ICP bot's window)."""
     cutoff = now - timedelta(days=since_days)
-    rows = session.scalars(select(Meeting).order_by(Meeting.start_time.desc()))
+    rows = session.execute(select(Meeting, func.substr(Meeting.transcript, 1, TRANSCRIPT_EXCERPT_CHARS))
+                           .order_by(Meeting.start_time.desc()))
     out = []
-    for m in rows:
+    for m, excerpt in rows:
         started = m.start_time if (m.start_time is None or m.start_time.tzinfo) else m.start_time.replace(tzinfo=timezone.utc)
         if started is not None and started < cutoff:
             continue
         out.append(MeetingRecord(m.meeting_id, m.title, started, m.summary, tuple(m.participants or []),
                                  tuple(m.participant_domains or []), tuple(m.action_items or []),
-                                 tuple(m.key_questions or []), tuple(m.topics or [])))
+                                 tuple(m.key_questions or []), tuple(m.topics or []), m.source, excerpt or None))
     return out

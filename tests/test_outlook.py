@@ -56,8 +56,9 @@ class Graph:
             if self.throttle:
                 self.throttle -= 1
                 return httpx.Response(429, headers={"Retry-After": "0"})
-            term = request.url.params["$search"].strip('"')
-            self.searches.append(term)
+            term = request.url.params.get("$search", "").strip('"')
+            if "$search" in request.url.params:  # a plain read of a message (no $search) is not a search
+                self.searches.append(term)
             return httpx.Response(200, json={"value": self.messages.get(term, [])})
         return httpx.Response(404)
 

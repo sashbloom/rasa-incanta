@@ -251,8 +251,10 @@ class OAuthToken(Timestamped, Base):
 
 
 class Meeting(Timestamped, Base):
-    """A Read.ai meeting delivered by the signed webhook. Transcripts are deliberately not stored:
-    only the summary, action items and topics are ever used, and only as excerpts."""
+    """A meeting: delivered by Read.ai signed webhook (`source` "webhook", no transcript kept) or uploaded
+    by hand as past history (`source` "upload", with its transcript). Only the summary, action items,
+    topics and a short excerpt are ever used on a card, and only as excerpts: a whole transcript never goes
+    to a model."""
 
     __tablename__ = "meetings"
 
@@ -272,7 +274,8 @@ class Meeting(Timestamped, Base):
     key_questions: Mapped[list] = mapped_column(JSONType, default=list)
     topics: Mapped[list] = mapped_column(JSONType, default=list)
     chapter_summaries: Mapped[list] = mapped_column(JSONType, default=list)
-    source: Mapped[str] = mapped_column(String(20), default="webhook")
+    source: Mapped[str] = mapped_column(String(20), default="webhook")  # webhook | upload
+    transcript: Mapped[str | None] = mapped_column(Text, deferred=True)  # uploads only; loaded when asked for
 
 
 class CompanyIcp(Timestamped, Base):

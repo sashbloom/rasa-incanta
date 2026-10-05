@@ -40,7 +40,7 @@ from api.config import Settings
 from api.domain.stages import board_for, stage_position
 from api.domain.weeks import local_today, week_start
 from api.engine import icp_signal, persona_signal
-from api.engine.capability import Capability, capability_for
+from api.engine.capability import Capability, capability_for, sme_text
 from api.engine.context import CardContent, build_card
 from api.engine.linking import deal_identity, mail_belongs, meeting_belongs
 from api.engine.mail import key_points
@@ -411,13 +411,12 @@ def run_week(
         if result.ok:
             draft, card = result.draft, cards[z.zoho_id]
             case = (card.capability.get("case_studies") or [None])[0]
-            sme = (card.capability.get("smes") or [None])[0]
             session.add(Recommendation(
                 run_id=run.id, deal_id=deals[z.zoho_id].id, rank=1, objective=draft.objective,
                 action=draft.action.strip(), why_now=draft.why_now.strip(), evidence=result.evidence,
                 effort=draft.effort, gaps=card.gaps, model=result.model, treasury_ref=draft.treasury_ref,
                 proof={"name": case["name"], "why": case.get("why")} if case else {},
-                sme=sme["name"] if sme else None,
+                sme=sme_text(card.capability.get("smes") or []),
             ))
             stats["nba_created"] += 1
         else:

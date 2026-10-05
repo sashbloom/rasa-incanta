@@ -102,11 +102,29 @@ def _token_request(settings: Settings, http: httpx.Client, data: dict) -> dict:
     return response.json()
 
 
+def graph_error(response: httpx.Response) -> str:
+    """What Microsoft actually said: status, error code, message and the request id Microsoft support asks for.
+    A body that is not Graph's JSON error is cut short and included as is."""
+    request_id = response.headers.get("request-id") or response.headers.get("client-request-id")
+    try:
+        error = (response.json() or {}).get("error") or {}
+    except ValueError:
+        error = {}
+    if isinstance(error, dict) and (error.get("code") or error.get("message")):
+        request_id = (error.get("innerError") or {}).get("request-id") or request_id
+        message = (error.get("message") or "").strip().splitlines()[0][:300] if error.get("message") else ""
+        detail = f"HTTP {response.status_code}: {error.get('code') or 'no error code'}" + (f": {message}" if message else "")
+    else:
+        body = " ".join((response.text or "").split())[:200]
+        detail = f"HTTP {response.status_code}" + (f": {body}" if body else "")
+    return detail + (f" (request-id {request_id})" if request_id else "")
+
+
 def signed_in_mailbox(http: httpx.Client, access_token: str) -> str:
     response = http.get(f"{GRAPH}/me", params={"$select": "mail,userPrincipalName"},
                         headers={"Authorization": f"Bearer {access_token}"})
     if response.status_code != 200:
-        raise OutlookError(f"Could not confirm who signed in (HTTP {response.status_code}).")
+        raise OutlookError(f"Could not confirm who signed in ({graph_error(response)}).")
     me = response.json()
     return (me.get("mail") or me.get("userPrincipalName") or "").strip().lower()
 
@@ -143,8 +161,10 @@ def connect(session: Session, settings: Settings, code: str, http: httpx.Client,
 
 def status(session: Session, settings: Settings) -> dict:
     row = session.scalar(select(OAuthToken).where(OAuthToken.provider == PROVIDER))
+    granted = (row.scope or "") if row else ""
     return {"configured": configured(settings), "connected": row is not None,
-            "account": row.account if row else None, "mailbox": settings.myrah_mailbox or None}
+            "account": row.account if row else None, "mailbox": settings.myrah_mailbox or None,
+            "scope": granted or None, "mail_read": "mail.read" in granted.lower() if row and granted else None}
 
 
 def access_token(session: Session, settings: Settings, http: httpx.Client, now: datetime | None = None) -> str:
@@ -196,19 +216,25 @@ def message_to_mail(m: dict) -> Mail:
 
 
 def search_messages(http: httpx.Client, token: str, mailbox: str, query: str, top: int = SEARCH_TOP) -> list[dict]:
-    """Graph `$search` over subject, body, sender and recipients. Retries on 429 and 5xx,
-    honouring Retry-After. `$search` cannot be combined with `$filter`/`$orderby` on messages."""
+    """Graph `$search` over subject, body, sender and recipients, in the signed-in user own mailbox.
+
+    The token is delegated and only a sign-in as MYRAH_MAILBOX is ever stored, so the mailbox is `/me`:
+    the documented route for delegated Mail.Read, and it does not depend on the configured address
+    matching the account user principal name (`/users/{address}` does). `mailbox` stays in the signature
+    for the callers. Retries on 429 and 5xx, honouring Retry-After; `$search` cannot be combined with
+    `$filter` or `$orderby` on messages. A failure carries Microsoft own error code and message."""
     params = {"$search": f'"{query}"', "$top": str(top),
               "$select": "id,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,webLink"}
     for attempt in range(MAX_RETRIES + 1):
-        response = http.get(f"{GRAPH}/users/{mailbox}/messages", params=params,
-                            headers={"Authorization": f"Bearer {token}", "ConsistencyLevel": "eventual"})
+        response = http.get(f"{GRAPH}/me/messages", params=params, headers={"Authorization": f"Bearer {token}"})
         if response.status_code == 200:
             return response.json().get("value", [])
         if response.status_code in (429, 500, 502, 503, 504) and attempt < MAX_RETRIES:
             time.sleep(min(float(response.headers.get("Retry-After", 2 ** attempt)), 30))
             continue
-        raise OutlookError(f"Mail search failed (HTTP {response.status_code}).")
+        detail = graph_error(response)
+        logger.warning("Outlook mail search for %r failed: %s", query, detail)
+        raise OutlookError(f"Mail search failed ({detail})")
     return []
 
 
@@ -250,31 +276,79 @@ def fetch_mail(session: Session, settings: Settings, deals: list[tuple[str, str 
             http.close()
         return MailResult(error=f"Outlook sign-in could not be refreshed ({type(exc).__name__}).")
 
+    errors: list[str] = []
+
     def one(item):
         zoho_id, company, identity = item
-        seen, mails = set(), []
+        seen, mails, tried = set(), [], 0
         for term in search_terms(company, getattr(identity, "domains", ())):
-            for message in search_messages(http, token, settings.myrah_mailbox, term):
+            tried += 1
+            try:
+                found = search_messages(http, token, settings.myrah_mailbox, term)
+            except OutlookError as exc:  # this search failed; the others still count
+                errors.append(str(exc))
+                continue
+            for message in found:
                 mail = message_to_mail(message)
                 if mail.id in seen or not belongs(identity, mail):
                     continue
                 seen.add(mail.id)
                 mails.append(mail)
         mails.sort(key=lambda m: m.received or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
-        return zoho_id, mails[:MAX_MAILS_PER_DEAL]
+        return zoho_id, mails[:MAX_MAILS_PER_DEAL], tried
 
     result = MailResult()
     try:
         with ThreadPoolExecutor(max_workers=SEARCH_WORKERS) as pool:
-            for zoho_id, mails in pool.map(one, deals):
+            tried_total = 0
+            for zoho_id, mails, tried in pool.map(one, deals):
+                tried_total += tried
                 if mails:
                     result.by_deal[zoho_id] = mails
-    except OutlookError as exc:
-        result = MailResult(error=str(exc))
     except Exception as exc:
         logger.exception("Outlook mail search failed")
         result = MailResult(error=f"Outlook mail search failed ({type(exc).__name__}). Details are in the server log.")
+    else:
+        if errors:
+            first = errors[0].removeprefix("Mail search failed ")
+            result.error = (f"{len(errors)} of {tried_total} mail searches failed, so some deals may show no mail. "
+                            f"Microsoft said {first}")
     finally:
         if owns_http:
             http.close()
     return result
+
+
+def diagnose(session: Session, settings: Settings, http: httpx.Client, now: datetime | None = None) -> dict:
+    """Make the calls a run makes, one at a time, and report what Microsoft answered to each: the token
+    refresh, who the token belongs to, the scopes granted, a plain read of one message, and a `$search`.
+    For GET /api/debug/outlook. Read-only; never raises."""
+    report: dict = {"configured": configured(settings), "endpoint": f"{GRAPH}/me/messages", "requested_scope": SCOPE}
+    if not report["configured"]:
+        return {**report, "error": "Outlook is not configured."}
+    row = session.scalar(select(OAuthToken).where(OAuthToken.provider == PROVIDER))
+    report["stored_scope"] = row.scope if row else None
+    report["mail_read_granted"] = ("mail.read" in (row.scope or "").lower()) if row else None
+    try:
+        token = access_token(session, settings, http, now)
+        report["token"] = "ok"
+    except Exception as exc:
+        return {**report, "token": f"{type(exc).__name__}: {exc}"}
+
+    def call(params: dict) -> dict:
+        try:
+            response = http.get(f"{GRAPH}/me/messages", params=params, headers={"Authorization": f"Bearer {token}"})
+        except httpx.HTTPError as exc:
+            return {"ok": False, "detail": f"{type(exc).__name__}: could not reach Microsoft"}
+        if response.status_code == 200:
+            return {"ok": True, "status": 200, "messages": len(response.json().get("value", []))}
+        return {"ok": False, "status": response.status_code, "detail": graph_error(response)}
+
+    try:
+        report["me"] = signed_in_mailbox(http, token)
+        report["me_matches_myrah"] = report["me"] == settings.myrah_mailbox.strip().lower()
+    except Exception as exc:
+        report["me"] = f"{type(exc).__name__}: {exc}"
+    report["read_one_message"] = call({"$top": "1", "$select": "id,subject"})
+    report["search"] = call({"$search": '"Practus"', "$top": "1", "$select": "id,subject"})
+    return report

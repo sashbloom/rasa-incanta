@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
@@ -38,6 +39,7 @@ from api.sources import outlook, readai
 from api.sources.setu import fetch_case_studies
 from api.sources.zoho import fetch_deals
 from api import export as board_export
+from api import transcripts
 from api.views import BOARD_LABEL, BOARD_ORDER, deal_view, deals_view, run_payload, summary_view, visible_deals, week_view
 from api.weekly import save_decision
 
@@ -249,6 +251,37 @@ def import_icp_scores(scores: list[ImportedIcpScore], session: Session = Depends
     imported, skipped = icp_signal.import_scores(session, [s.model_dump() for s in scores],
                                                  datetime.now(timezone.utc), get_settings().icp_cache_days)
     return {"imported": imported, "skipped": skipped}
+
+
+@fastapi_app.post("/api/transcripts/upload", dependencies=[Depends(require_debug_key)])
+async def upload_transcripts(request: Request, session: Session = Depends(get_session)) -> dict:
+    """Feed in past meetings Read.ai never delivered: a JSON array (title, date, participants, transcript,
+    optional action_items and summary) or one plain text file. Stored in `meetings` with source "upload" and
+    matched to deals the way the webhook is. Returns how many were stored and how many matched a deal."""
+    body = await request.body()
+    if len(body) > transcripts.MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "That upload is too large; send fewer meetings at a time.")
+    try:
+        entries = transcripts.parse_upload(request.headers.get("content-type"), body)
+    except transcripts.BadUpload as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return await run_in_threadpool(transcripts.store_and_match, session, get_settings(), entries)
+
+
+@fastapi_app.get("/api/transcripts", dependencies=[Depends(require_debug_key)])
+def list_transcripts(source: str | None = None, limit: int = 500, session: Session = Depends(get_session)) -> dict:
+    """Every stored meeting (`?source=upload` or `webhook` to narrow it) with the deals it matched, so what
+    matched and what did not is visible."""
+    return transcripts.listing(session, get_settings(), source=source, limit=max(1, min(limit, 2000)))
+
+
+@fastapi_app.get("/api/debug/outlook", dependencies=[Depends(require_debug_key)])
+def debug_outlook(session: Session = Depends(get_session)) -> dict:
+    """Make the calls a run makes against Microsoft Graph, one at a time, and show exactly what Microsoft
+    answered to each (status, error code, message, request id), plus the scopes the stored sign-in holds.
+    Read-only. Gated like every debug route."""
+    with httpx.Client(timeout=30.0) as http:
+        return outlook.diagnose(session, get_settings(), http)
 
 
 @fastapi_app.get("/api/debug/richest-deals", dependencies=[Depends(require_debug_key)])

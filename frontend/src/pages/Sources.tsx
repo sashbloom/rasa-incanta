@@ -76,6 +76,10 @@ function OutlookConnect({ view }: { view: SourcesView['outlook'] }) {
       <p className="m-0">
         {view.connected ? `Connected to ${view.account}.` : `Not connected. ${view.mailbox} needs to sign in once.`}
       </p>
+      {view.connected && view.mail_read === false && (
+        <p className="m-0 mt-2">Microsoft did not grant Mail.Read (granted: {view.scope}). Reconnect and accept the mail permission.</p>
+      )}
+      {view.connected && view.scope && view.mail_read && <p className="t-meta m-0 mt-1">Permissions granted: {view.scope}</p>}
       <button type="button" onClick={start} disabled={busy}
         className="t-label mt-3 cursor-pointer rounded-md border-0 bg-gold-web px-4 py-2 text-navy disabled:bg-line">
         {busy ? 'Opening Microsoft' : view.connected ? 'Reconnect Outlook' : 'Connect Outlook'}

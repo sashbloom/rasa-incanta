@@ -109,7 +109,11 @@ account-fit and stakeholder logic is copied into this codebase, not called over 
     `extra_cached`. `p2_case_study_matcher.py`'s OWN rerank dropped this same trick once embedding
     narrowing gave it a small, deal-specific shortlist instead — a cached block only pays off when
     it's read back, and a 5-item shortlist that differs every call never is.
-  - SMEs (internal team) come from the P3 team matcher, active people only, no extra call.
+  - **Who to bring in:** the deal's own EP Involved and EL Involved from Zoho (`capability.deal_team`; placeholders
+    such as "Unidentified EP" dropped via `real_people`). They are cited through `zoho.ep_involved` /
+    `zoho.el_involved`, shown on the deal header, and stored on a recommendation as "A. Mehta (EP), R. Iyer (EL)".
+    Only a deal that names neither falls back to the P3 team matcher (active people only, no extra call), and
+    that person is labelled "suggested SME, not yet on the deal" everywhere (fact `setu.sme_N`, `sme` text).
 - **Conversation from Zoho:** `reachout_tracker` (the deal's outreach log) gives every in-scope
   deal a dated touch with the person met, designation, role and remarks, read in `sources/zoho.py`.
   Teams / in-person / phone clear `no_call_logged`. Emails and phone numbers are scrubbed from
@@ -122,13 +126,20 @@ account-fit and stakeholder logic is copied into this codebase, not called over 
   unset `<origin>/reports/rasa-incanta/api/outlook/callback` from the forwarded host and scheme;
   whichever it is must be registered in Azure. Only a sign-in as MYRAH_MAILBOX is stored; the
   rotating refresh token lives in `oauth_tokens`. Mail is searched per deal on the company name and each contact domain;
+  A failed search reports Microsoft's own error (status, code, message, request id) and never loses the other
+  searches' results. Mail is read from `/me/messages` (delegated). `GET /api/debug/outlook` (gated) makes the
+  calls a run makes and shows what Microsoft answered, plus the scopes the stored sign-in holds.
   `engine/linking.py` keeps only mail that really concerns the deal; `engine/mail.py` extracts key
   points from previews with LLM_MODEL_EXTRACTION.
 - **Read.ai:** the signed workspace webhook, `POST /api/webhooks/readai` (`sources/readai.py`).
   HMAC-SHA256 of the raw body; the key READAI_WEBHOOK_SECRET is tried raw and base64-decoded; unset
   means every delivery is refused. Stored in `meetings` without transcripts; linked to deals by
   participant email domain or the company named in the title. Only meetings from the day the
-  webhook goes live (no OAuth backfill).
+  webhook goes live (no OAuth backfill). Earlier meetings come in by hand: `POST /api/transcripts/upload`
+  (a JSON array, or one plain text file with Title/Date/Participants lines, `---`, then the transcript) stores them
+  with `source="upload"` and the transcript (`api/transcripts.py`, migration 0008), matched exactly like the
+  webhook; `GET /api/transcripts` lists them with the deals each matched. A card only ever gets the summary or,
+  with none, the first 300 characters of the transcript (rule 7: a whole transcript never goes to a model).
 - **ICP logic:** a full copy of the ICP bot's scoring in `api/icp/` (criteria, gates, scorer,
   verdicts, rule precompute, interpretation, evidence assembly, ownership and secondary research via
   Exa, Practus history, conflict check, Setu P2/P3), plus its reference files in `api/icp/reference/`.
@@ -192,7 +203,8 @@ account-fit and stakeholder logic is copied into this codebase, not called over 
   recorded fixtures, never live calls. Security checks must be able to fail: traversal uses 3+
   levels against the raw ASGI path, scoping uses two restricted users who see different deals.
 - Debug endpoints (raw source dumps, internal tooling — currently `GET /api/setu/case-studies`,
-  `/api/setu/enriched`, `/api/debug/richest-deals` and `POST /api/icp/import`): gate every one behind
+  `/api/setu/enriched`, `/api/debug/richest-deals`, `/api/debug/outlook`, `POST /api/icp/import`,
+  `POST /api/transcripts/upload` and `GET /api/transcripts`): gate every one behind
   `dependencies=[Depends(require_debug_key)]` (`api/main.py`). `X-Debug-Key: <SESSION_SECRET>` or
   a 404, indistinguishable from a route that doesn't exist — never a 401/403 that confirms
   something is there. A header, not a query parameter, so the key never lands in a URL that gets

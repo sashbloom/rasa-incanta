@@ -121,6 +121,8 @@ export type IcpSummary = {
   practus_verdict: string | null
   gates_fired: string[] | null
   computed_at: string | null
+  imported?: boolean | null
+  right_to_win?: string | null
 }
 
 export type DealDetail = {
@@ -145,7 +147,10 @@ export type DealDetail = {
 
 export type SourcesView = {
   last_run: RunView | null
-  outlook: { configured: boolean; connected: boolean; account: string | null; mailbox: string | null; redirect_uri: string }
+  outlook: {
+    configured: boolean; connected: boolean; account: string | null; mailbox: string | null; redirect_uri: string
+    scope: string | null; mail_read: boolean | null
+  }
   readai: { configured: boolean; meetings: number; webhook_path: string }
   exa: { configured: boolean }
   anthropic: { configured: boolean }

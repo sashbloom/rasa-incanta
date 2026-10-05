@@ -14,6 +14,7 @@ from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
 from api.config import Settings
+from api.engine.capability import real_people
 from api.domain.gaps import Gap, gap_copy
 from api.domain.stages import Board, stage_position
 from api.domain.weeks import week_start
@@ -172,12 +173,13 @@ def deal_view(session: Session, deal_id: uuid.UUID) -> dict | None:
     state = (card.deal_state if card else {}) or {}
     fit = (card.account_fit if card else {}) or {}
     icp = {k: fit.get(k) for k in ("status", "recommendation", "provisional", "client_total", "client_verdict",
-                                   "practus_total", "practus_verdict", "gates_fired", "computed_at")} if fit else None
+                                   "practus_total", "practus_verdict", "gates_fired", "computed_at", "imported",
+                                   "right_to_win")} if fit else None
     return {
         "icp": icp,
         "id": str(deal.id), "name": deal.name, "stage": deal.stage, "board": deal.board, "sbu": deal.sbu,
         "account_name": deal.account_name, "contact_name": deal.contact_name, "owner_name": deal.owner_name,
-        "ep_involved": deal.ep_involved or [], "el_involved": deal.el_involved or [],
+        "ep_involved": real_people(deal.ep_involved), "el_involved": real_people(deal.el_involved),
         "days_in_stage": state.get("days_in_stage"), "last_touch": state.get("last_touch"),
         "segments": _segments(card), "actions": actions, "actions_week": actions_week,
         "decision": decision,

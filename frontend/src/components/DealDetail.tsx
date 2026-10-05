@@ -55,7 +55,7 @@ function ActionItem({ action, index, ticked, locked, onToggle }: {
         )}
         {action.sme && (
           <>
-            <dt className="t-label leading-6">SME</dt>
+            <dt className="t-label leading-6">Practus team</dt>
             <dd className="m-0">{action.sme}</dd>
           </>
         )}
@@ -73,10 +73,12 @@ function ActionItem({ action, index, ticked, locked, onToggle }: {
 function icpLine(icp: Detail['icp']): string | null {
   if (!icp) return null
   if (icp.status === 'gate_1_stopped') return 'Could not score: company not identified'
-  const lenses = icp.provisional
-    ? `client ${icp.client_verdict?.toLowerCase()}, provisional`
-    : `client ${icp.client_total}/50, Practus ${icp.practus_total}/50`
-  return `${icp.recommendation} (${lenses})`
+  const verdict = icp.recommendation ?? 'Scored'
+  // An imported score carries a verdict and right to win but no criteria scores: never print null/50.
+  if (icp.imported) return `${verdict} (imported, scores not available)`
+  if (icp.provisional) return `${verdict} (client ${icp.client_verdict?.toLowerCase() ?? 'unknown'}, provisional)`
+  if (icp.client_total == null || icp.practus_total == null) return verdict
+  return `${verdict} (client ${icp.client_total}/50, Practus ${icp.practus_total}/50)`
 }
 
 const SAVE_ERROR_FALLBACK = 'Could not save the decision. Try again in a moment.'
@@ -312,6 +314,7 @@ export function DealDetail({ dealId, backTo, reloadKey = 0 }: { dealId: string; 
         <Field label="Stage" value={deal.stage} />
         <Field label="Owner" value={deal.owner_name} />
         <Field label="EP" value={deal.ep_involved.join(', ')} />
+        <Field label="EL" value={deal.el_involved.join(', ')} />
         <Field label="In stage" value={deal.days_in_stage != null ? `${deal.days_in_stage} days` : null} />
         <Field label="Last touch" value={shortDate(deal.last_touch)} />
         <Field label="Company" value={deal.account_name} />

@@ -1,5 +1,6 @@
 """Mail key points, the ICP signals and cache, the re-ranked capability, and a run with every
 signal filled. All sources and models are fakes."""
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -8,7 +9,8 @@ from sqlalchemy import select
 
 from api.db import get_sessionmaker
 from api.engine import icp_signal
-from api.engine.capability import capability_for
+from api.engine.capability import Capability, capability_for, sme_text
+from api.engine.context import build_card
 from api.engine.mail import KeyPoints, MailPoints, key_points
 from api.icp.models import (CriterionInterpretation, CriterionScore, EvidenceLabel, GateResult, GroupScore,
                             OwnershipControl, ScoreResult)
@@ -142,13 +144,57 @@ def team(**_):
             {"name": "No Match", "grade": "TL", "status": "Active"}]
 
 
-def test_reranked_cases_carry_claudes_reason_and_active_smes_only():
+def test_reranked_cases_carry_claudes_reason_and_the_deal_names_its_own_people():
     find = lambda **kw: [{"name": "Steel Major", "industry": "Steel", "service_line": None, "content": "x", "industry_match": False}]  # noqa: E731
     rerank = lambda c, **kw: [{**c[0], "llm_rationale": "Same cost-leakage problem."}]  # noqa: E731
     cap = capability_for(northwind(), CORPUS, find_cases=find, rerank=rerank, find_team=team)
     assert cap.reranked and cap.cases[0]["name"] == "Steel Major" and cap.cases[0]["why"] == "Same cost-leakage problem."
+    # Zoho names A. Mehta (EP) and R. Iyer (EL); "Unidentified EL" is a placeholder, and Setu is not asked
+    assert [(s["name"], s["role"], s["on_deal"]) for s in cap.smes] == [("A. Mehta", "EP", True), ("R. Iyer", "EL", True)]
+    assert sme_text(cap.smes) == "A. Mehta (EP), R. Iyer (EL)"
+
+
+def no_one_named():
+    return replace(northwind(), ep_involved=["Unidentified EP"], el_involved=[])
+
+
+def test_a_deal_with_no_ep_or_el_gets_a_labelled_suggestion_from_setu_active_people_only():
+    find = lambda **kw: []  # noqa: E731
+    cap = capability_for(no_one_named(), CORPUS, find_cases=find, find_team=team)
     assert [s["name"] for s in cap.smes] == ["A. Mehta"]  # inactive and no-match people dropped
+    assert cap.smes[0]["suggested"] is True and not cap.smes[0].get("on_deal")
     assert "industry experience" in cap.smes[0]["why"] and "Theobroma" in cap.smes[0]["why"]
+    assert sme_text(cap.smes) == "A. Mehta (suggested SME, not yet on the deal)"
+
+
+def test_the_setu_team_matcher_is_not_consulted_when_the_deal_names_people():
+    def boom(**kw):
+        raise AssertionError("the team matcher was asked although the deal names its EP and EL")
+
+    cap = capability_for(northwind(), CORPUS, find_cases=lambda **kw: [], find_team=boom)
+    assert [s["name"] for s in cap.smes] == ["A. Mehta", "R. Iyer"]
+
+
+def test_ep_and_el_are_citable_facts_and_placeholders_are_not():
+    card = build_card(northwind(), NOW.date())
+    facts = {f["id"]: f for f in card.deal_state["facts"]}
+    assert facts["zoho.ep_involved"]["value"] == "A. Mehta" and facts["zoho.el_involved"]["value"] == "R. Iyer"
+    nobody = build_card(no_one_named(), NOW.date())
+    ids = {f["id"] for f in nobody.deal_state["facts"]}
+    assert "zoho.ep_involved" not in ids and "zoho.el_involved" not in ids  # "Unidentified EP" is not a person
+
+
+def test_the_deals_own_people_are_on_the_card_even_without_setu():
+    card = build_card(northwind(), NOW.date())
+    assert [s["name"] for s in card.capability["smes"]] == ["A. Mehta", "R. Iyer"]
+    assert not any(f["id"].startswith("setu.sme") for f in card.capability["facts"])  # cited via the zoho facts
+
+
+def test_a_suggested_sme_is_a_fact_that_says_it_is_not_on_the_deal():
+    cap = Capability(cases=[], smes=[{"name": "A. Mehta", "grade": "EP", "why": "industry experience", "suggested": True}], reranked=False)
+    card = build_card(no_one_named(), NOW.date(), capability=cap)
+    fact = next(f for f in card.capability["facts"] if f["id"] == "setu.sme_1")
+    assert fact["value"].startswith("Suggested SME (not yet on the deal): A. Mehta")
 
 
 def test_a_failed_rerank_falls_back_to_the_strict_match_not_to_keyword_noise():
@@ -162,7 +208,7 @@ def test_a_setu_outage_inside_the_rerank_still_gives_the_strict_match():
     def broken(**kw):
         raise RuntimeError("Setu down")
 
-    cap = capability_for(northwind(), CORPUS, find_cases=broken, find_team=broken)
+    cap = capability_for(no_one_named(), CORPUS, find_cases=broken, find_team=broken)
     assert [c["name"] for c in cap.cases] == ["Patisserie & Bakes"] and cap.smes == []
 
 
@@ -219,7 +265,7 @@ def test_a_run_fills_all_five_signals_and_the_nba_cites_across_them(all_sources)
         assert conv["meetings"] == 1 and conv["last_meeting"]["title"].startswith("Northwind")
         rec = s.scalar(select(Recommendation))
         assert [e["source"] for e in rec.evidence] == ["zoho", "outlook", "readai", "setu", "icp"]
-        assert rec.proof == {"name": "Patisserie & Bakes", "why": "Fits the receivables problem."} and rec.sme == "A. Mehta"
+        assert rec.proof == {"name": "Patisserie & Bakes", "why": "Fits the receivables problem."} and rec.sme == "A. Mehta (EP), R. Iyer (EL)"
         assert r.stats["phase"] == "done" and r.stats["icp_to_score"] == 2 and r.stats["capability_done"] == 2
 
 
@@ -244,7 +290,7 @@ def test_the_board_fills_the_segments_that_have_data(client, all_sources):
     assert segments["conversation"]["sources"] == ["Zoho", "Call", "Mail"]
     assert segments["fit"]["source"] == "ICP" and segments["contact"]["source"] == "ICP"
     assert detail["icp"]["recommendation"] == "Pursue selectively"
-    assert detail["actions"][0]["sme"] == "A. Mehta" and detail["actions"][0]["proof"]["name"] == "Patisserie & Bakes"
+    assert detail["actions"][0]["sme"] == "A. Mehta (EP), R. Iyer (EL)" and detail["actions"][0]["proof"]["name"] == "Patisserie & Bakes"
 
 
 def test_without_an_anthropic_key_icp_and_rerank_are_skipped_and_said_so(migrated):

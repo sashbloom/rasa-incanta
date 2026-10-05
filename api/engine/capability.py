@@ -14,6 +14,7 @@ Geography alone never counts there either. No qualifying case study means the `n
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from api.domain.matching import (
@@ -100,8 +101,35 @@ def describe(match: CaseMatch) -> str:
 class Capability:
     """What a deal can cite as proof, and who to bring in."""
     cases: list[dict]  # {name, industry, service_line, content, why, industry_match}
-    smes: list[dict]  # {name, grade, why}
+    smes: list[dict]  # the deal's own EP / EL ({name, role, on_deal}), else suggested ({name, grade, why, suggested})
     reranked: bool  # False when the Claude re-rank failed and the strict deterministic match was used
+
+
+# Zoho fills EP / EL with placeholders when nobody is named yet; those are not people.
+_PLACEHOLDER = re.compile(r"^\s*(unidenti\w*|tbd|tba|none|nil|n/?a|not (yet )?(assigned|identified)|-+)\b", re.IGNORECASE)
+
+
+def real_people(names) -> list[str]:
+    """The named people in a Zoho EP / EL field, without placeholders such as "Unidentified EP"."""
+    return [n for n in (names or []) if n and n.strip() and not _PLACEHOLDER.match(n)]
+
+
+def deal_team(deal: ZohoDeal) -> list[dict]:
+    """The Practus people actually on the account, from the deal EP Involved and EL Involved fields.
+    These are the default people for an action to name; they are cited through the deal own
+    `zoho.ep_involved` / `zoho.el_involved` facts."""
+    return ([{"name": n, "role": "EP", "on_deal": True} for n in real_people(deal.ep_involved)]
+            + [{"name": n, "role": "EL", "on_deal": True} for n in real_people(deal.el_involved)])
+
+
+def sme_text(smes: list[dict]) -> str | None:
+    """How a recommendation records who to bring in: the deal EP / EL, or one clearly marked suggestion."""
+    team = [s for s in smes if s.get("on_deal")]
+    if team:
+        return ", ".join(f"{s['name']} ({s['role']})" for s in team)
+    if smes:
+        return f"{smes[0]['name']} (suggested SME, not yet on the deal)"
+    return None
 
 
 def _geography(deal: ZohoDeal) -> str | None:
@@ -143,8 +171,10 @@ MAX_SMES = 2
 
 
 def capability_for(deal: ZohoDeal, corpus: list[CaseStudy], *, find_cases=None, rerank=None, find_team=None) -> Capability:
-    """The ICP bot's P2 case-study match with its one Claude re-rank, falling back to our strict
-    deterministic match if the re-rank fails; plus up to two active SMEs from its P3 matcher."""
+    """The ICP bot P2 case-study match with its one Claude re-rank, falling back to our strict
+    deterministic match if the re-rank fails. The people are the deal own EP and EL; only a deal that
+    names neither falls back to up to two active SMEs from the ICP bot P3 matcher, marked `suggested`
+    (not yet on the deal)."""
     from api.icp import p2_case_study_matcher as p2
     from api.icp import p3_team_matcher as p3
 
@@ -164,6 +194,7 @@ def capability_for(deal: ZohoDeal, corpus: list[CaseStudy], *, find_cases=None, 
                       "industry_match": bool(c.get("industry_match"))} for c in picked]
     except Exception:
         cases = []
-    if not reranked:  # never let the re-rank's fallback (top keyword scores, possibly zero) stand as proof
+    if not reranked:  # never let the re-rank fallback (top keyword scores, possibly zero) stand as proof
         cases = _deterministic_cases(deal, corpus)
-    return Capability(cases=cases, smes=_smes(deal, find_team), reranked=reranked)
+    smes = deal_team(deal) or [{**s, "suggested": True} for s in _smes(deal, find_team)]
+    return Capability(cases=cases, smes=smes, reranked=reranked)

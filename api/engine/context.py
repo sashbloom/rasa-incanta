@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from api.domain.gaps import Gap
 from api.domain.stages import board_for
-from api.engine.capability import Capability, describe, match_case_studies
+from api.engine.capability import Capability, deal_team, describe, match_case_studies, real_people
 from api.sources.outlook import Mail
 from api.sources.readai import MeetingRecord
 from api.sources.setu import CaseStudy
@@ -139,6 +139,8 @@ def _meeting_facts(meetings: list[MeetingRecord], tz: str) -> list[dict]:
             value += f" with {_names(m.participants)}"
         if m.summary:
             value += f". Summary: {_excerpt(m.summary)}"
+        elif m.transcript_excerpt:
+            value += f". Transcript excerpt: {_excerpt(m.transcript_excerpt)}"
         if m.action_items:
             value += ". Action items: " + "; ".join(_excerpt(a, 120) for a in m.action_items[:3])
         facts.append(_fact(f"meeting_{i}", _short(m.title or "Meeting"), value, m.start_time, tz, source="readai"))
@@ -201,7 +203,7 @@ def capability_signal(deal: ZohoDeal, case_studies: list[CaseStudy] | None,
         cases = [{"name": m.case.name, "industry": m.case.industry, "service_line": m.case.service_line,
                   "content": m.case.content, "text": describe(m), "industry_match": m.industry_match,
                   "keyword_hits": list(m.keyword_hits), "score": m.score} for m in matches]
-        smes, reranked = [], False
+        smes, reranked = deal_team(deal), False  # the people on the deal come from Zoho, with or without Setu
     else:
         cases = [{**c, "text": f"{c['name']}" + (f" ({', '.join(x for x in (c.get('industry'), c.get('service_line')) if x)})"
                                                  if c.get("industry") or c.get("service_line") else "")
@@ -210,10 +212,14 @@ def capability_signal(deal: ZohoDeal, case_studies: list[CaseStudy] | None,
 
     facts = [_fact(f"case_{i}", _short(c["name"]), c["text"] + (f" {_excerpt(c['content'])}" if c.get("content") else ""),
                    source="setu") for i, c in enumerate(cases, 1)]
-    facts += [_fact(f"sme_{i}", f"SME {s['name']}", f"{s['name']}" + (f" ({s['grade']})" if s.get("grade") else "")
-                    + (f": {s['why']}" if s.get("why") else ""), source="setu") for i, s in enumerate(smes, 1)]
+    # The deal own EP / EL are cited through zoho.ep_involved / zoho.el_involved; only a Setu suggestion
+    # (someone not on the deal) becomes a capability fact, and it says so.
+    suggested = [s for s in smes if s.get("suggested")]
+    facts += [_fact(f"sme_{i}", f"Suggested SME {s['name']}",
+                    f"Suggested SME (not yet on the deal): {s['name']}" + (f" ({s['grade']})" if s.get("grade") else "")
+                    + (f". {s['why']}" if s.get("why") else ""), source="setu") for i, s in enumerate(suggested, 1)]
     if not cases:
-        return ({"smes": smes, "facts": facts} if facts else {}), [Gap.NO_SETU_MATCH]
+        return ({"smes": smes, "facts": facts} if (facts or smes) else {}), [Gap.NO_SETU_MATCH]
     return {
         "case_studies": [{k: v for k, v in c.items() if k not in ("content", "text")} for c in cases],
         "smes": smes, "reranked": reranked, "facts": facts,
@@ -237,8 +243,8 @@ def build_card(deal: ZohoDeal, today: date, tz: str = "Asia/Kolkata", reachouts:
     optional = [
         ("account", "Company", deal.account_name, None),
         ("owner", "Owner", deal.owner_name, None),
-        ("ep_involved", "EP involved", ", ".join(deal.ep_involved) or None, None),
-        ("el_involved", "EL involved", ", ".join(deal.el_involved) or None, None),
+        ("ep_involved", "EP involved", ", ".join(real_people(deal.ep_involved)) or None, None),
+        ("el_involved", "EL involved", ", ".join(real_people(deal.el_involved)) or None, None),
         ("industry", "Industry", deal.industry, None),
         ("city_state", "City", deal.city_state, None),
         ("lead_source", "Lead source", deal.lead_source, None),
