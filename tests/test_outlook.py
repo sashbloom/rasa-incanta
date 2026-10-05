@@ -139,17 +139,15 @@ def connected(graph):
     return s
 
 
-def test_mail_is_found_by_name_and_domain_filtered_and_newest_first(migrated):
+def test_mail_is_found_by_company_name_filtered_by_domain_and_newest_first(migrated):
     deal = row_to_deal(load("zoho/deals.json")[0])
     ident = deal_identity(deal, [Reachout(deal_zoho_id=deal.zoho_id, email="priya@northwindfoods.example")])
     graph = Graph(messages={
         "Northwind Foods Pvt Ltd": [
             message(1, "Northwind Foods: phasing", "priya@northwindfoods.example", days_ago=3),
             message(2, "Lunch?", "friend@gmail.com", preview="Nothing about the client"),  # search noise
-        ],
-        "participants:northwindfoods.example": [
-            message(1, "Northwind Foods: phasing", "priya@northwindfoods.example", days_ago=3),  # duplicate
             message(3, "Board pack", "cfo.office@northwindfoods.example", to=[MYRAH], days_ago=1),
+            message(1, "Northwind Foods: phasing", "priya@northwindfoods.example", days_ago=3),  # duplicate
         ],
     })
     s = connected(graph)
@@ -159,7 +157,7 @@ def test_mail_is_found_by_name_and_domain_filtered_and_newest_first(migrated):
     assert result.ok
     mails = result.by_deal[deal.zoho_id]
     assert [m.subject for m in mails] == ["Board pack", "Northwind Foods: phasing"]  # dedupe, filter, newest first
-    assert graph.searches == ["Northwind Foods Pvt Ltd", "participants:northwindfoods.example"]
+    assert graph.searches == ["Northwind Foods Pvt Ltd"]  # one search per term, and no participants: (Graph rejects it)
 
 
 def test_throttling_is_retried(migrated):

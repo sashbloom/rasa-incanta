@@ -238,10 +238,12 @@ def search_messages(http: httpx.Client, token: str, mailbox: str, query: str, to
     return []
 
 
-def search_terms(company_name: str | None, domains) -> list[str]:
-    """What to search a deal's mail for: the company name, and each company domain."""
+def search_terms(company_name: str | None) -> list[str]:
+    """What to search a deal's mail for: the company name, one search per term, results merged by message id.
+    Not `participants:<domain>`: Graph answers it with "Unrecognized filter of type
+    Microsoft.Exchange.Data.OrFilter" (it expands to an OR over from/to/cc/bcc), which failed 10 of 21
+    searches. `belongs` still matches each hit to the deal by its sender and recipient domains."""
     terms = [company_name.strip()] if company_name and company_name.strip() else []
-    terms += [f"participants:{d}" for d in sorted(domains)]
     return [t.replace('"', "") for t in terms]
 
 
@@ -276,17 +278,17 @@ def fetch_mail(session: Session, settings: Settings, deals: list[tuple[str, str 
             http.close()
         return MailResult(error=f"Outlook sign-in could not be refreshed ({type(exc).__name__}).")
 
-    errors: list[str] = []
+    errors: list[tuple[str, str]] = []  # (term, what Microsoft said)
 
     def one(item):
         zoho_id, company, identity = item
         seen, mails, tried = set(), [], 0
-        for term in search_terms(company, getattr(identity, "domains", ())):
+        for term in search_terms(company):
             tried += 1
             try:
                 found = search_messages(http, token, settings.myrah_mailbox, term)
             except OutlookError as exc:  # this search failed; the others still count
-                errors.append(str(exc))
+                errors.append((term, str(exc)))
                 continue
             for message in found:
                 mail = message_to_mail(message)
@@ -310,9 +312,10 @@ def fetch_mail(session: Session, settings: Settings, deals: list[tuple[str, str 
         result = MailResult(error=f"Outlook mail search failed ({type(exc).__name__}). Details are in the server log.")
     else:
         if errors:
-            first = errors[0].removeprefix("Mail search failed ")
+            term, said = errors[0]
+            first = said.removeprefix("Mail search failed ")
             result.error = (f"{len(errors)} of {tried_total} mail searches failed, so some deals may show no mail. "
-                            f"Microsoft said {first}")
+                            f"First failure, searching for {term!r}: Microsoft said {first}")
     finally:
         if owns_http:
             http.close()

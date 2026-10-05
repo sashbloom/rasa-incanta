@@ -125,7 +125,7 @@ account-fit and stakeholder logic is copied into this codebase, not called over 
   browser to the Sources page with a fixed status word. The redirect URI is MS_REDIRECT_URI, or when
   unset `<origin>/reports/rasa-incanta/api/outlook/callback` from the forwarded host and scheme;
   whichever it is must be registered in Azure. Only a sign-in as MYRAH_MAILBOX is stored; the
-  rotating refresh token lives in `oauth_tokens`. Mail is searched per deal on the company name and each contact domain;
+  rotating refresh token lives in `oauth_tokens`. Mail is searched per deal on the company name only, one search per term, merged by message id (`participants:<domain>` is rejected by Graph with an OrFilter error); `belongs` matches hits by domain;
   A failed search reports Microsoft's own error (status, code, message, request id) and never loses the other
   searches' results. Mail is read from `/me/messages` (delegated). `GET /api/debug/outlook` (gated) makes the
   calls a run makes and shows what Microsoft answered, plus the scopes the stored sign-in holds.

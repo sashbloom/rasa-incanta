@@ -76,26 +76,37 @@ def test_search_uses_the_delegated_me_endpoint(migrated):
 
 def test_the_run_status_carries_microsofts_error_not_just_a_status_code(migrated):
     deal, ident = northwind()
-    graph = FailingGraph(fail={"Northwind Foods Pvt Ltd", "participants:northwindfoods.example"})
+    graph = FailingGraph(fail={"Northwind Foods Pvt Ltd"})
     s = connected_session(graph)
     result = outlook.fetch_mail(s, ms_settings(), [(deal.zoho_id, deal.account_name, ident)], mail_belongs,
                                 http=http(graph), now=NOW)
     s.close()
     assert not result.ok and result.by_deal == {}
-    assert "2 of 2 mail searches failed" in result.error
+    assert "1 of 1 mail searches failed" in result.error
+    assert "'Northwind Foods Pvt Ltd'" in result.error  # which search failed, not only why
     assert "ErrorInternalServerError" in result.error and REQUEST_ID in result.error
 
 
 def test_one_failed_search_keeps_the_mail_the_others_found(migrated):
     deal, ident = northwind()
-    graph = FailingGraph(fail={"participants:northwindfoods.example"}, messages={
+    graph = FailingGraph(fail={"Acme"}, messages={
         "Northwind Foods Pvt Ltd": [message(1, "Northwind Foods: phasing", "priya@northwindfoods.example")]})
     s = connected_session(graph)
-    result = outlook.fetch_mail(s, ms_settings(), [(deal.zoho_id, deal.account_name, ident)], mail_belongs,
-                                http=http(graph), now=NOW)
+    deals = [(deal.zoho_id, deal.account_name, ident), ("other-deal", "Acme", ident)]
+    result = outlook.fetch_mail(s, ms_settings(), deals, mail_belongs, http=http(graph), now=NOW)
     s.close()
     assert [m.subject for m in result.by_deal[deal.zoho_id]] == ["Northwind Foods: phasing"]
+    assert "other-deal" not in result.by_deal
     assert "1 of 2 mail searches failed" in result.error  # still said, so it is not mistaken for a clean run
+
+
+def test_no_search_uses_the_participants_syntax_graph_rejects(migrated):
+    deal, ident = northwind()
+    graph = FailingGraph()
+    s = connected_session(graph)
+    outlook.fetch_mail(s, ms_settings(), [(deal.zoho_id, deal.account_name, ident)], mail_belongs, http=http(graph), now=NOW)
+    s.close()
+    assert graph.searches and not any(":" in term for term in graph.searches)
 
 
 def test_an_expired_token_mid_run_is_reported_with_the_graph_code(migrated):
