@@ -31,9 +31,6 @@ export type RunView = {
     deals?: number
     capability_done?: number
     capability_to_do?: number
-    icp_to_score?: number
-    icp_done?: number
-    icp_cached?: number
     persona_to_do?: number
     persona_done?: number
     persona_cached?: number
@@ -121,8 +118,6 @@ export type IcpSummary = {
   practus_verdict: string | null
   gates_fired: string[] | null
   computed_at: string | null
-  imported?: boolean | null
-  right_to_win?: string | null
 }
 
 export type DealDetail = {

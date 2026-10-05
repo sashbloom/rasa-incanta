@@ -79,7 +79,7 @@ const STEPS: Step[] = [
   { key: 'pull', doing: 'Pulling deals from Zoho', done: 'Pulled deals from Zoho', noun: 'deals' },
   { key: 'mail', doing: 'Searching Outlook mail', done: 'Searched Outlook mail', noun: 'deals' },
   { key: 'capability', doing: 'Matching Setu case studies', done: 'Matched Setu case studies', noun: 'deals' },
-  { key: 'icp', doing: 'Scoring ICP', done: 'Scored ICP', noun: 'companies' },
+  { key: 'icp', doing: 'Reading ICP scores', done: 'Read ICP scores', noun: 'companies' },
   { key: 'persona', doing: 'Researching contacts', done: 'Researched contacts', noun: 'contacts' },
   { key: 'cards', doing: 'Building context cards', done: 'Built context cards', noun: 'deals' },
   { key: 'nba', doing: 'Drafting actions', done: 'Drafted actions', noun: 'deals' },
@@ -89,7 +89,6 @@ const STEPS: Step[] = [
 function phaseCounts(run: RunView, key: string): [number, number] | null {
   const s = run.stats
   if (key === 'capability' && s.capability_to_do !== undefined) return [s.capability_done ?? 0, s.capability_to_do]
-  if (key === 'icp' && s.icp_to_score) return [s.icp_done ?? 0, s.icp_to_score]
   if (key === 'persona' && s.persona_to_do) return [s.persona_done ?? 0, s.persona_to_do]
   if (key === 'nba' && s.nba_to_draft !== undefined) return [s.nba_done ?? 0, s.nba_to_draft]
   return null
@@ -177,9 +176,6 @@ function Progress({ run }: { run: RunView }) {
           </li>
         )
       })}
-      {phase === 'icp' && (
-        <li className="t-meta m-0 mt-1 pl-6">Each new company takes several minutes; scores are reused for four weeks.</li>
-      )}
       {elapsed !== null && (
         <li className="t-meta m-0 mt-2 flex justify-between border-t border-line pt-1.5 tabular-nums">
           <span>Elapsed {duration(elapsed)}</span>

@@ -8,18 +8,18 @@ Phases (`stats.phase`, with done/total counts for the board's progress bar):
   pull        Zoho deals and outreach log, Setu case studies, recent Read.ai meetings
   mail        Outlook mail per deal (delegated Graph), then key points per deal with mail
   capability  the ICP bot's P2 case-study re-rank (one Claude call per deal) and SMEs
-  icp         the ICP bot's scoring for companies without a fresh cached result
+  icp         finished ICP scores read from the shared ICP Postgres (read-only; we never score)
   persona     Exa research on the person in each deal's outreach log, cached 8 weeks per contact
   cards       context cards and snapshots
   nba         one NBA per deal (`nba_limit`; None means every deal, as POST /api/run does). The first
               draft runs alone so its cached prompt prefix is written once and read by the rest.
 Slow network work runs in thread pools; database writes stay on this thread. One failing
 source never fails the run: it is recorded under `stats.sources` and becomes gap flags.
-Without an Anthropic key the re-rank, SMEs and ICP scoring are skipped (and said so); persona
-research also needs EXA_API_KEY.
+Without an Anthropic key the re-rank and SMEs are skipped (and said so); persona research also needs
+EXA_API_KEY (Exa is used for the contact persona only, never for company scoring).
 
-Every Claude and Exa call is traced in Langfuse under one session per run ("rasa-incanta:run:<id>";
-ICP scoring keeps its own session per company). Pool submits go through tracing.propagate_context,
+Every Claude and Exa call is traced in Langfuse under one session per run ("rasa-incanta:run:<id>").
+Pool submits go through tracing.propagate_context,
 because contextvars do not cross into ThreadPoolExecutor workers on their own.
 """
 from __future__ import annotations
@@ -128,7 +128,7 @@ def run_week(
     fetch_setu: Callable[[Settings], SetuResult] = fetch_case_studies,
     fetch_mail: Callable | None = None,
     capability_fn: Callable[..., Capability] | None = None,
-    score_company_fn: Callable | None = None,
+    fetch_icp: Callable[[Settings, dict[str, str]], icp_shared.SharedResult] = icp_shared.load_scores,
     persona_fn: Callable | None = None,
     llm_client: Any | None = None,
     deal_zoho_id: str | None = None,
@@ -238,72 +238,22 @@ def run_week(
         stats["sources"]["setu_rerank"] = "skipped: ANTHROPIC_API_KEY is not set"
 
     # ---------------------------------------------------------------- icp
-    icp_by_key: dict[str, tuple[dict, dict, str]] = {}
+    # Read-only: finished scores from the shared ICP Postgres. We never score a company ourselves, so a
+    # company with no finished run there has no ICP (the card flags no_icp) and the run goes on.
     companies: dict[str, str] = {}
     for z in zoho.deals:
         companies.setdefault(icp_signal.company_key(z.account_name or z.name), z.account_name or z.name)
-    stale = []
-    shared_reused, shared_error = 0, None
-    for key, company in companies.items():
-        require_exa = bool(settings.exa_api_key)
-        row = icp_signal.fresh_icp(session, key, now, settings.icp_cache_days, require_exa=require_exa)
-        if row is None and icp_shared.configured(settings):
-            found = icp_shared.find(settings, key, now, settings.icp_cache_days, require_exa=require_exa)
-            if not found.ok:
-                shared_error = found.error  # unreachable: fall back to our own scoring for this company
-            elif found.score is not None:
-                row = icp_signal.adopt_shared(session, company, found.score)
-                shared_reused += 1
-        if row is not None:
-            icp_by_key[key] = (row.account_fit, row.stakeholder, row.status)
-        else:
-            stale.append((key, company))
-    session.commit()
-    score_fn = score_company_fn
-    if score_fn is None and settings.anthropic_api_key:
-        from api.icp.pipeline import score_company
-        score_fn = score_company
-    save(phase="icp", icp_cached=len(icp_by_key), icp_to_score=len(stale) if score_fn else 0, icp_done=0, icp_failed=0)
-    if score_fn is None:
-        stats["sources"]["icp"] = "skipped: ANTHROPIC_API_KEY is not set" if stale else "ok (all cached)"
-    elif stale:
-        with ThreadPoolExecutor(max_workers=max(1, settings.icp_concurrency)) as pool:
-            futures = {pool.submit(tracing.propagate_context(score_fn), company, generated_at=now): (key, company) for key, company in stale}
-            for future in as_completed(futures):
-                key, company = futures[future]
-                try:
-                    row = icp_signal.record(session, company, now, result=future.result(),
-                                            exa_research=bool(settings.exa_api_key))
-                    icp_by_key[key] = (row.account_fit, row.stakeholder, row.status)
-                    if icp_shared.configured(settings):
-                        why = icp_shared.publish(settings, key, icp_shared.SharedScore(
-                            company_name=company, computed_at=now, status=row.status, account_fit=row.account_fit,
-                            stakeholder=row.stakeholder, result=row.result, data_gaps=row.data_gaps))
-                        if why:
-                            shared_error = why
-                        elif row.status in icp_shared.REUSABLE:
-                            stats["icp_shared_published"] = stats.get("icp_shared_published", 0) + 1
-                except Exception as exc:
-                    logger.exception("ICP scoring failed for %s", company)
-                    icp_signal.record(session, company, now, error=f"{type(exc).__name__}: {str(exc)[:300]}")
-                    stats["icp_failed"] += 1
-                stats["icp_done"] += 1
-                save()
-        scored = stats["icp_done"] - stats["icp_failed"]
-        summary = f"{scored} scored, {stats['icp_cached']} cached"
-        stats["sources"]["icp"] = (f"ok ({summary})" if not stats["icp_failed"]
-                                   else f"{stats['icp_failed']} companies could not be scored ({summary})")
+    save(phase="icp")
+    icp_by_key: dict[str, tuple[dict, dict, str]] = {}
+    shared = fetch_icp(settings, companies)
+    if shared.ok:
+        for key, score in shared.scores.items():
+            account_fit, stakeholder = icp_signal.signals(score)
+            icp_by_key[key] = (account_fit, stakeholder, score.status)
+        stats["sources"]["icp"] = f"ok ({len(icp_by_key)} of {len(companies)} companies have a score)"
     else:
-        stats["sources"]["icp"] = "ok (all cached)"
-
-    if not icp_shared.configured(settings):
-        stats["sources"]["icp_shared"] = "not configured (ICP_SHARED_DB_URL); using the local cache only"
-    elif shared_error:
-        stats["sources"]["icp_shared"] = (f"unreachable or failed ({shared_error}); used the local cache and our own "
-                                          f"scoring ({shared_reused} reused, {stats.get('icp_shared_published', 0)} published)")
-    else:
-        stats["sources"]["icp_shared"] = f"ok ({shared_reused} reused, {stats.get('icp_shared_published', 0)} published)"
-    stats["icp_shared_reused"] = shared_reused
+        stats["sources"]["icp"] = f"unavailable ({shared.error}); deals are flagged no ICP"
+    stats["icp_found"] = len(icp_by_key)
     save()
 
     # ---------------------------------------------------------------- persona

@@ -1,87 +1,30 @@
-"""The `account_fit` and `stakeholder` signals, from the ICP bot's scoring (api/icp/).
+"""The `account_fit` and `stakeholder` signals, from finished ICP scores in the shared ICP Postgres.
 
-A company is scored once and the result reused for ICP_CACHE_DAYS (CLAUDE.md: 4 weeks). Rows in
-`company_icp` are append-only; failures are recorded but never reused, so they retry next run.
-Each row records whether Exa research was available (`result.exa_research`). Once EXA_API_KEY is
-set, a score made without it is not reused: those scores had every web-research criterion as a
-data gap (usually Provisional, Gate 7), so the company is rescored with research.
+We no longer score companies ourselves: `sources/icp_shared.py` reads the newest finished run of each
+company (icp.runs joined to icp.run_criterion_scores) and this module turns it into the two signals.
+A company with no finished run has neither (the card gets the `no_icp` gap).
 
-account_fit: the recommendation, both lenses (with group sub-verdicts), every fired gate, and
-each criterion with evidence (score, label, trimmed rationale). stakeholder: authority (C1) and
-warmth and threading (C2), which are left out of account_fit so they are not listed twice.
+account_fit: the recommendation, both lenses, every fired gate, and each criterion with evidence
+(score, label, trimmed rationale). stakeholder: authority (C1) and warmth and threading (C2), which are
+left out of account_fit so they are not listed twice.
+
+`company_key` and the criterion display names come from the ICP engine's pure helpers in api/icp/,
+which is otherwise unwired: nothing here calls its scoring or any web research.
 """
 from __future__ import annotations
 
 import html
-from datetime import datetime, timedelta, timezone
-
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from api.icp import criteria_tables as ct
 from api.icp.entity_resolver import normalize_for_matching
-from api.icp.pipeline import CompanyScore
-from api.models import CompanyIcp
+from api.sources.icp_shared import SharedScore
 
-REUSABLE = ("scored", "gate_1_stopped")
 MAX_RATIONALE_CHARS = 280
 STAKEHOLDER_CRITERIA = ("C1", "C2")
 
 
 def company_key(name: str | None) -> str:
     return normalize_for_matching(name or "") or (name or "").strip().lower()
-
-
-def fresh_icp(session: Session, key: str, now: datetime, days: int, *, require_exa: bool = False) -> CompanyIcp | None:
-    """The newest reusable scoring of this company younger than `days`, if any. With
-    `require_exa`, a scoring made without Exa research does not count."""
-    cutoff = now - timedelta(days=days)
-    for row in session.scalars(select(CompanyIcp).where(CompanyIcp.company_key == key)
-                               .order_by(CompanyIcp.computed_at.desc())):
-        computed = row.computed_at if row.computed_at.tzinfo else row.computed_at.replace(tzinfo=timezone.utc)
-        if computed < cutoff:
-            return None
-        result = row.result or {}
-        if row.status in REUSABLE and (not require_exa or result.get("exa_research") or result.get("imported")):
-            return row
-    return None
-
-
-def import_scores(session: Session, entries: list[dict], now: datetime, days: int) -> tuple[int, int]:
-    """Add scores made elsewhere (company, verdict, right_to_win, scored_at) to company_icp. A company
-    with a reusable score younger than `days` is skipped, and so is a repeat within the same batch.
-    Returns (imported, skipped). Rows are append-only and marked `result.imported`, which is also
-    what lets them count as researched when EXA_API_KEY is set: the score is trusted as given."""
-    imported = skipped = 0
-    for entry in entries:
-        name = entry["company"].strip()
-        if fresh_icp(session, company_key(name), now, days) is not None:
-            skipped += 1
-            continue
-        scored_at = entry["scored_at"]
-        scored_at = scored_at if scored_at.tzinfo else scored_at.replace(tzinfo=timezone.utc)
-        verdict, right_to_win = entry["verdict"].strip(), (entry.get("right_to_win") or "").strip()
-        value = f"ICP recommendation: {verdict}" + (f". Right to win: {right_to_win}" if right_to_win else "")
-        session.add(CompanyIcp(
-            company_key=company_key(name), company_name=name, computed_at=scored_at, status="scored",
-            account_fit={"status": "scored", "recommendation": verdict, "right_to_win": right_to_win or None,
-                         "imported": True, "computed_at": scored_at.isoformat(),
-                         "facts": [_fact("recommendation", "Recommendation", value, scored_at.date().isoformat())]},
-            stakeholder={}, result={"imported": True, "verdict": verdict, "right_to_win": right_to_win or None},
-            data_gaps=[]))
-        session.flush()  # so a repeat of this company later in the batch is skipped
-        imported += 1
-    session.commit()
-    return imported, skipped
-
-
-def adopt_shared(session: Session, company_name: str, shared) -> CompanyIcp:
-    """Keep a score another agent shared in our own history, so later runs find it locally."""
-    row = CompanyIcp(company_key=company_key(company_name), company_name=company_name,
-                     computed_at=shared.computed_at, status=shared.status, account_fit=shared.account_fit,
-                     stakeholder=shared.stakeholder, result=shared.result, data_gaps=list(shared.data_gaps))
-    session.add(row)
-    return row
 
 
 def _trim(text: str, limit: int = MAX_RATIONALE_CHARS) -> str:
@@ -101,68 +44,43 @@ def _fact(key: str, label: str, value: str, day: str) -> dict:
     return {"id": f"icp.{key}", "source": "icp", "label": label, "value": value, "date": day}
 
 
-def signals(result: CompanyScore, computed_at: datetime) -> tuple[dict, dict]:
-    """(account_fit, stakeholder) for a finished scoring."""
-    day = computed_at.date().isoformat()
-    if result.status == "gate_1_stopped":
-        return ({"status": "gate_1_stopped", "facts": [
-            _fact("gate_1", "Not scored", f"ICP could not score this company: {_trim(result.stop_reason or '')}", day)]}, {})
+def signals(score: SharedScore) -> tuple[dict, dict]:
+    """(account_fit, stakeholder) for one finished shared run."""
+    day = score.generated_at.date().isoformat()
+    if score.status == "gate_1_stopped":
+        return ({"status": "gate_1_stopped", "run_id": score.run_id, "facts": [
+            _fact("gate_1", "Not scored", f"ICP could not score this company: {_trim(score.stop_reason or '')}", day)]}, {})
 
-    s = result.score
-    rec = f"ICP recommendation: {s.recommendation}" + (" (provisional: too few client criteria had evidence)"
-                                                        if s.provisional else "")
-    if s.recommendation_reason:
-        rec += f". {_trim(s.recommendation_reason)}"
-    groups = ", ".join(f"{ct.GROUP_SHORT_NAMES.get(g.name, g.name)} {g.subtotal}/{g.max_points} {g.sub_verdict}"
-                       for g in s.client_groups)
-    client = (f"Client lens: {s.client_verdict} (provisional)" if s.provisional
-              else f"Client lens {s.client_total}/50, {s.client_verdict}: {groups}")
-    facts = [
-        _fact("recommendation", "Recommendation", rec, day),
-        _fact("client_lens", "Client lens", client, day),
-        _fact("practus_lens", "Practus lens", f"Practus lens {s.practus_total}/50, {s.practus_verdict}", day),
-    ]
-    facts += [_fact(f"gate_{g.gate_id}", f"Gate {g.gate_id}", f"Gate {g.gate_id} ({g.name}) fired: {_trim(g.detail)}", day)
-              for g in s.gates if g.fired]
-    criteria = [c for g in s.client_groups for c in g.criteria] + list(s.practus_criteria)
-    for c in criteria:
-        if c.criterion_id in STAKEHOLDER_CRITERIA or c.data_gap or c.is_na or c.raw_score is None:
+    rec = f"ICP recommendation: {score.recommendation}" + (" (provisional: too few client criteria had evidence)"
+                                                           if score.provisional else "")
+    if score.recommendation_reason:
+        rec += f". {_trim(score.recommendation_reason)}"
+    client = (f"Client lens: {score.client_verdict} (provisional)" if score.provisional
+              else f"Client lens {score.client_total}/50, {score.client_verdict}")
+    facts = [_fact("recommendation", "Recommendation", rec, day), _fact("client_lens", "Client lens", client, day)]
+    if score.practus_total is not None:
+        facts.append(_fact("practus_lens", "Practus lens", f"Practus lens {score.practus_total}/50, {score.practus_verdict}", day))
+    facts += [_fact(f"gate_{g['gate_id']}", f"Gate {g['gate_id']}",
+                    f"Gate {g['gate_id']} ({g['name']}) fired: {_trim(g['detail'] or '')}", day) for g in score.gates]
+    for c in score.criteria:
+        if c["criterion_id"] in STAKEHOLDER_CRITERIA or c["data_gap"] or c["is_na"] or c["raw_score"] is None:
             continue
-        facts.append(_fact(f"criterion_{c.criterion_id}", _name(c.criterion_id),
-                           f"{_name(c.criterion_id)} {c.raw_score}/5 ({_label(c.condition_label)}): {_trim(c.rationale)}", day))
+        name = _name(c["criterion_id"])
+        facts.append(_fact(f"criterion_{c['criterion_id']}", name,
+                           f"{name} {c['raw_score']}/5 ({_label(c['condition_label'])}): {_trim(c['rationale'] or '')}", day))
     account_fit = {
-        "status": "scored", "recommendation": s.recommendation, "provisional": s.provisional,
-        "client_total": s.client_total, "client_verdict": s.client_verdict,
-        "practus_total": s.practus_total, "practus_verdict": s.practus_verdict,
-        "gates_fired": [g.gate_id for g in s.gates if g.fired],
-        "ownership_control": getattr(result.bundle.entity.ownership_control, "value", None),
-        "computed_at": computed_at.isoformat(), "facts": facts,
+        "status": "scored", "recommendation": score.recommendation, "provisional": score.provisional,
+        "client_total": score.client_total, "client_verdict": score.client_verdict,
+        "practus_total": score.practus_total, "practus_verdict": score.practus_verdict,
+        "gates_fired": [g["gate_id"] for g in score.gates],
+        "run_id": score.run_id, "computed_at": score.generated_at.isoformat(), "facts": facts,
     }
 
     stakeholder_facts = []
+    by_id = {c["criterion_id"]: c for c in score.criteria}
     for cid, key in (("C1", "authority"), ("C2", "warmth")):
-        interp = result.interpretations.get(cid)
-        if interp is None or interp.data_gap:
+        c = by_id.get(cid)
+        if c is None or c["data_gap"] or c["is_na"]:
             continue
-        stakeholder_facts.append(_fact(key, _name(cid),
-                                       f"{_name(cid)}: {_label(interp.condition_label)}. {_trim(interp.rationale)}", day))
-    stakeholder = {"facts": stakeholder_facts} if stakeholder_facts else {}
-    return account_fit, stakeholder
-
-
-def record(session: Session, company_name: str, computed_at: datetime, result: CompanyScore | None = None,
-           error: str | None = None, exa_research: bool = False) -> CompanyIcp:
-    """Append one scoring (or failure) to company_icp."""
-    if result is None:
-        row = CompanyIcp(company_key=company_key(company_name), company_name=company_name, computed_at=computed_at,
-                         status="failed", error=error)
-    else:
-        account_fit, stakeholder = signals(result, computed_at)
-        full = {"interpretations": {k: v.model_dump(mode="json") for k, v in result.interpretations.items()},
-                "score": result.score.model_dump(mode="json") if result.score else None,
-                "stop_reason": result.stop_reason, "exa_research": exa_research}
-        row = CompanyIcp(company_key=company_key(company_name), company_name=company_name, computed_at=computed_at,
-                         status=result.status, account_fit=account_fit, stakeholder=stakeholder, result=full,
-                         data_gaps=list(result.bundle.data_gaps))
-    session.add(row)
-    return row
+        stakeholder_facts.append(_fact(key, _name(cid), f"{_name(cid)}: {_label(c['condition_label'])}. {_trim(c['rationale'] or '')}", day))
+    return account_fit, ({"facts": stakeholder_facts} if stakeholder_facts else {})

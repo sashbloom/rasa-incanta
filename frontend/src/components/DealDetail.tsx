@@ -76,11 +76,12 @@ function icpLine(icp: Detail['icp']): string | null {
   if (!icp) return null
   if (icp.status === 'gate_1_stopped') return 'Could not score: company not identified'
   const verdict = icp.recommendation ?? 'Scored'
-  // An imported score carries a verdict and right to win but no criteria scores: never print null/50.
-  if (icp.imported) return `${verdict} (imported, scores not available)`
-  if (icp.provisional) return `${verdict} (client ${icp.client_verdict?.toLowerCase() ?? 'unknown'}, provisional)`
-  if (icp.client_total == null || icp.practus_total == null) return verdict
-  return `${verdict} (client ${icp.client_total}/50, Practus ${icp.practus_total}/50)`
+  // The real numbers from the shared ICP score. A provisional client lens has too little evidence for a total.
+  const clientVerdict = icp.client_verdict?.toLowerCase() ?? 'unknown'
+  const client = icp.provisional ? `client ${clientVerdict}, provisional`
+    : icp.client_total == null ? `client ${clientVerdict}` : `client ${icp.client_total}/50`
+  const practus = icp.practus_total != null ? `, Practus ${icp.practus_total}/50` : ''
+  return `${verdict} (${client}${practus})`
 }
 
 const SAVE_ERROR_FALLBACK = 'Could not save the decision. Try again in a moment.'

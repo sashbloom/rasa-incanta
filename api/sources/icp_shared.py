@@ -1,76 +1,78 @@
-"""The ICP scores shared between Practus agents: one Postgres, one append-only `company_icp` table.
+"""Finished ICP scores, read from the Postgres shared with the ICP service. We are a reader only.
 
-Before scoring a company ourselves we look here for a score younger than ICP_CACHE_DAYS; after
-scoring one we add it so other agents can reuse it. Only usable scorings are shared (`scored` and
-`gate_1_stopped`, never failures), and a score made without Exa research is not reused once
-EXA_API_KEY is set, same as our local cache. Rows are only ever inserted.
+Tables (docs/ICP_Postgres_Schema.md): `icp.runs` (one row per finished run, joined here to
+`icp.run_criterion_scores` for the criteria breakdown) and `icp.run_gates`. Nothing is ever written
+back, and the connection is read-only. `icp.run_files` (binary report blobs) is never touched, and
+neither are the heavy `runs` columns (`html_content`, `markdown_content`, `input_data`).
 
-Nothing here raises: an unset or unreachable database comes back as `ok=False` and the run falls
-back to the local `company_icp` table and its own scoring.
+A company is matched on `engine.icp_signal.company_key` (case- and legal-suffix-insensitive) against
+`runs.company_name`; its newest finished, usable run wins. A company with no such run simply has no
+entry: the card gets the `no_icp` gap and the run goes on. Nothing here raises; an unset or
+unreachable database comes back as `ok=False`.
 """
 from __future__ import annotations
 
 import logging
-import uuid
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 import psycopg
 from psycopg.rows import dict_row
-from psycopg.types.json import Jsonb
 
 from api.config import Settings
 
 logger = logging.getLogger(__name__)
 
-AGENT = "rasa-incanta"
-REUSABLE = ("scored", "gate_1_stopped")
+# A run we can use: it finished without error and either stopped at Gate 1 or produced a verdict.
+RUNS = """
+SELECT run_id, company_name, generated_at
+FROM icp.runs
+WHERE done AND error IS NULL AND (gate_1_stopped OR recommendation IS NOT NULL)
+ORDER BY generated_at DESC"""
 
-CREATE_TABLE = """
-CREATE TABLE IF NOT EXISTS company_icp (
-    id uuid PRIMARY KEY,
-    company_key text NOT NULL,
-    company_name text NOT NULL,
-    computed_at timestamptz NOT NULL,
-    status text NOT NULL,
-    account_fit jsonb NOT NULL DEFAULT '{}',
-    stakeholder jsonb NOT NULL DEFAULT '{}',
-    result jsonb NOT NULL DEFAULT '{}',
-    data_gaps jsonb NOT NULL DEFAULT '[]',
-    source_agent text NOT NULL
-)"""
-CREATE_INDEX = "CREATE INDEX IF NOT EXISTS ix_company_icp_key_computed ON company_icp (company_key, computed_at DESC)"
+# icp.runs joined to its criteria. Explicit columns only: no report text, no input_data.
+DETAIL = """
+SELECT r.run_id, r.company_name, r.generated_at, r.gate_1_stopped, r.stop_reason, r.recommendation,
+       r.recommendation_reason, r.client_total, r.client_verdict, r.practus_total, r.practus_verdict,
+       r.provisional,
+       c.criterion_id, c.group_name, c.raw_score, c.is_na, c.condition_label, c.rationale, c.data_gap
+FROM icp.runs r
+LEFT JOIN icp.run_criterion_scores c ON c.run_id = r.run_id
+WHERE r.run_id = ANY(%(ids)s)
+ORDER BY r.run_id, c.criterion_id"""
 
-SELECT = """
-SELECT company_name, computed_at, status, account_fit, stakeholder, result, data_gaps
-FROM company_icp
-WHERE company_key = %(key)s AND computed_at >= %(since)s AND status = ANY(%(statuses)s)
-ORDER BY computed_at DESC
-LIMIT 5"""
+GATES = """
+SELECT run_id, gate_id, name, fired, detail
+FROM icp.run_gates
+WHERE run_id = ANY(%(ids)s) AND fired
+ORDER BY run_id, gate_id"""
 
-INSERT = """
-INSERT INTO company_icp (id, company_key, company_name, computed_at, status, account_fit, stakeholder,
-                         result, data_gaps, source_agent)
-VALUES (%(id)s, %(key)s, %(name)s, %(computed_at)s, %(status)s, %(account_fit)s, %(stakeholder)s,
-        %(result)s, %(data_gaps)s, %(agent)s)"""
+CRITERION_FIELDS = ("criterion_id", "group_name", "raw_score", "is_na", "condition_label", "rationale", "data_gap")
 
 
 @dataclass
 class SharedScore:
     company_name: str
-    computed_at: datetime
-    status: str
-    account_fit: dict
-    stakeholder: dict
-    result: dict
-    data_gaps: list
+    run_id: str
+    generated_at: datetime
+    status: str  # "scored" or "gate_1_stopped"
+    recommendation: str | None = None
+    recommendation_reason: str | None = None
+    client_total: int | None = None
+    client_verdict: str | None = None
+    practus_total: int | None = None
+    practus_verdict: str | None = None
+    provisional: bool = False
+    stop_reason: str | None = None
+    criteria: list[dict] = field(default_factory=list)  # CRITERION_FIELDS
+    gates: list[dict] = field(default_factory=list)  # fired gates: gate_id, name, detail
 
 
 @dataclass
-class Lookup:
+class SharedResult:
     ok: bool
-    score: SharedScore | None = None
+    scores: dict[str, SharedScore] = field(default_factory=dict)  # by company key
     error: str | None = None
 
 
@@ -79,54 +81,59 @@ def configured(settings: Settings) -> bool:
 
 
 def _connect(settings: Settings) -> psycopg.Connection:
-    return psycopg.connect(settings.icp_shared_db_url.strip(), connect_timeout=10, row_factory=dict_row)
+    conn = psycopg.connect(settings.icp_shared_db_url.strip(), sslmode="require", connect_timeout=10,
+                           row_factory=dict_row)
+    conn.read_only = True  # belt and braces: this connection cannot write even if a query tried
+    return conn
 
 
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
-def find(settings: Settings, key: str, now: datetime, days: int, *, require_exa: bool = False,
-         connect_fn: Callable[[Settings], Any] = _connect) -> Lookup:
-    """The newest reusable shared score of this company younger than `days`, if any."""
+def load_scores(settings: Settings, companies: dict[str, str],
+                connect_fn: Callable[[Settings], Any] = _connect) -> SharedResult:
+    """The newest usable score of each company. `companies` maps company key -> name; only keys
+    with a finished run appear in the result."""
+    from api.engine.icp_signal import company_key  # local: icp_signal imports SharedScore from here
+
     if not configured(settings):
-        return Lookup(ok=False, error="ICP_SHARED_DB_URL is not set.")
+        return SharedResult(ok=False, error="ICP_SHARED_DB_URL is not set.")
+    if not companies:
+        return SharedResult(ok=True)
     try:
         with connect_fn(settings) as conn, conn.cursor() as cur:
-            cur.execute(SELECT, {"key": key, "since": now - timedelta(days=days), "statuses": list(REUSABLE)})
-            rows = cur.fetchall()
+            cur.execute(RUNS)
+            newest: dict[str, str] = {}  # company key -> run id; rows come newest first
+            for row in cur.fetchall():
+                key = company_key(row["company_name"])
+                if key in companies and key not in newest:
+                    newest[key] = row["run_id"]
+            if not newest:
+                return SharedResult(ok=True)
+            ids = list(newest.values())
+            cur.execute(DETAIL, {"ids": ids})
+            detail = cur.fetchall()
+            cur.execute(GATES, {"ids": ids})
+            gates = cur.fetchall()
     except Exception as exc:
         logger.warning("Shared ICP database could not be read (%s)", type(exc).__name__)
-        return Lookup(ok=False, error=f"{type(exc).__name__}")
-    for row in rows:
-        if require_exa and not (row["result"] or {}).get("exa_research"):
-            continue
-        return Lookup(ok=True, score=SharedScore(
-            company_name=row["company_name"], computed_at=_aware(row["computed_at"]), status=row["status"],
-            account_fit=row["account_fit"] or {}, stakeholder=row["stakeholder"] or {},
-            result=row["result"] or {}, data_gaps=row["data_gaps"] or []))
-    return Lookup(ok=True)
+        return SharedResult(ok=False, error=type(exc).__name__)
 
-
-def publish(settings: Settings, key: str, score: SharedScore,
-            connect_fn: Callable[[Settings], Any] = _connect) -> str | None:
-    """Add a scoring for other agents. None on success, else why it could not be shared."""
-    if not configured(settings):
-        return "ICP_SHARED_DB_URL is not set."
-    if score.status not in REUSABLE:
-        return None
-    try:
-        with connect_fn(settings) as conn:
-            with conn.cursor() as cur:
-                cur.execute(CREATE_TABLE)
-                cur.execute(CREATE_INDEX)
-                cur.execute(INSERT, {
-                    "id": uuid.uuid4(), "key": key, "name": score.company_name, "computed_at": score.computed_at,
-                    "status": score.status, "account_fit": Jsonb(score.account_fit),
-                    "stakeholder": Jsonb(score.stakeholder), "result": Jsonb(score.result),
-                    "data_gaps": Jsonb(score.data_gaps), "agent": AGENT})
-            conn.commit()
-    except Exception as exc:
-        logger.warning("Shared ICP database could not be written (%s)", type(exc).__name__)
-        return type(exc).__name__
-    return None
+    by_run: dict[str, SharedScore] = {}
+    for row in detail:
+        score = by_run.get(row["run_id"])
+        if score is None:
+            score = by_run[row["run_id"]] = SharedScore(
+                company_name=row["company_name"], run_id=row["run_id"], generated_at=_aware(row["generated_at"]),
+                status="gate_1_stopped" if row["gate_1_stopped"] else "scored",
+                recommendation=row["recommendation"], recommendation_reason=row["recommendation_reason"],
+                client_total=row["client_total"], client_verdict=row["client_verdict"],
+                practus_total=row["practus_total"], practus_verdict=row["practus_verdict"],
+                provisional=bool(row["provisional"]), stop_reason=row["stop_reason"])
+        if row["criterion_id"]:
+            score.criteria.append({k: row[k] for k in CRITERION_FIELDS})
+    for gate in gates:
+        if gate["run_id"] in by_run:
+            by_run[gate["run_id"]].gates.append({k: gate[k] for k in ("gate_id", "name", "detail")})
+    return SharedResult(ok=True, scores={key: by_run[run_id] for key, run_id in newest.items() if run_id in by_run})

@@ -12,10 +12,8 @@ from api.engine import icp_signal
 from api.engine.capability import Capability, capability_for, sme_text
 from api.engine.context import build_card
 from api.engine.mail import KeyPoints, MailPoints, key_points
-from api.icp.models import (CriterionInterpretation, CriterionScore, EvidenceLabel, GateResult, GroupScore,
-                            OwnershipControl, ScoreResult)
-from api.icp.pipeline import CompanyScore
-from api.models import CompanyIcp, ContextCard, Meeting, Recommendation, Run
+from api.models import ContextCard, Meeting, Recommendation, Run
+from api.sources.icp_shared import SharedResult, SharedScore
 from api.sources.outlook import Mail, MailResult
 from api.sources.readai import meeting_fields
 from api.sources.setu import CaseStudy
@@ -51,80 +49,53 @@ def test_key_points_fail_soft():
     assert key_points(None, "m", "N", [mail(1)]) == {} and key_points(FakeClaude(), "m", "N", []) == {}
 
 
-# ---------------------------------------------------------------- ICP signals and cache
+# ---------------------------------------------------------------- ICP signals
 
-def fake_score(provisional=False):
-    crit = lambda cid, score, gap=False: CriterionScore(criterion_id=cid, raw_score=score, weight=1, weighted_contribution=1,  # noqa: E731
-                                                        condition_label="some_label", rationale=f"{cid} rationale", data_gap=gap,
-                                                        evidence_label=EvidenceLabel.DATA_GAP)
-    group = GroupScore(name="Ability to Pay", criteria=[crit("A1", 4), crit("A2", 3, gap=True)], subtotal=14, max_points=20,
-                       sub_verdict="Moderate")
-    access = GroupScore(name="Access", criteria=[crit("C1", 4)], subtotal=10, max_points=15, sub_verdict="Strong")
-    score = ScoreResult(client_groups=[group, access], practus_criteria=[crit("P2", 5)], client_total=31,
-                        client_verdict="Moderate", practus_total=38, practus_verdict="Strong",
-                        gates=[GateResult(gate_id="5", name="Staleness", fired=True, detail="No stage change in 190 days"),
-                               GateResult(gate_id="2", name="Authority", fired=False)],
-                        recommendation="Pursue selectively", recommendation_reason="Strong fit, stale deal.",
-                        provisional=provisional)
-    interps = {"C1": CriterionInterpretation(criterion_id="C1", condition_label="sponsor_identified", rationale="CFO sponsors it."),
-               "C2": CriterionInterpretation(criterion_id="C2", condition_label="single_threaded", rationale="One contact only.")}
-    bundle = SimpleNamespace(entity=SimpleNamespace(ownership_control=OwnershipControl.WH), data_gaps=["No Exa key"])
-    return CompanyScore("Northwind Foods Pvt Ltd", "scored", bundle, interps, score)
+def shared_score(name="Northwind Foods Pvt Ltd", provisional=False, status="scored"):
+    def crit(cid, score, label="some_label", gap=False, rationale=None):
+        return {"criterion_id": cid, "group_name": None, "raw_score": score, "is_na": False,
+                "condition_label": label, "rationale": rationale or f"{cid} rationale", "data_gap": gap}
+
+    return SharedScore(
+        company_name=name, run_id="r1", generated_at=NOW, status=status, recommendation="Pursue selectively",
+        recommendation_reason="Strong fit, stale deal.", client_total=31, client_verdict="Moderate", practus_total=38,
+        practus_verdict="Strong", provisional=provisional, stop_reason="Company not identified",
+        criteria=[crit("A1", 4), crit("A2", 3, gap=True), crit("P2", 5),
+                  crit("C1", 4, "sponsor_identified", rationale="CFO sponsors it."),
+                  crit("C2", 2, "single_threaded", rationale="One contact only.")],
+        gates=[{"gate_id": "5", "name": "Staleness", "detail": "No stage change in 190 days"}])
 
 
 def test_icp_becomes_account_fit_and_stakeholder_facts():
-    fit, stakeholder = icp_signal.signals(fake_score(), NOW)
+    fit, stakeholder = icp_signal.signals(shared_score())
     values = {f["id"]: f["value"] for f in fit["facts"]}
     assert values["icp.recommendation"] == "ICP recommendation: Pursue selectively. Strong fit, stale deal."
-    assert values["icp.client_lens"].startswith("Client lens 31/50, Moderate: Ability 14/20 Moderate, Access 10/15 Strong")
+    assert values["icp.client_lens"] == "Client lens 31/50, Moderate"
+    assert values["icp.practus_lens"] == "Practus lens 38/50, Strong"
+    assert (fit["client_total"], fit["practus_total"]) == (31, 38)  # the real numbers reach the header
     assert values["icp.gate_5"] == "Gate 5 (Staleness) fired: No stage change in 190 days"
-    assert "icp.gate_2" not in values  # not fired
     assert values["icp.criterion_A1"] == "Scale 4/5 (some label): A1 rationale"
     assert "icp.criterion_A2" not in values and "icp.criterion_C1" not in values  # data gap; C1 is stakeholder
     assert [f["id"] for f in stakeholder["facts"]] == ["icp.authority", "icp.warmth"]
+    assert stakeholder["facts"][0]["value"] == "Authority: sponsor identified. CFO sponsors it."
     assert stakeholder["facts"][1]["value"] == "Warmth & threading: single threaded. One contact only."
     assert all(f["source"] == "icp" and f["date"] == "2026-09-24" for f in fit["facts"] + stakeholder["facts"])
 
 
 def test_provisional_scores_hide_the_total():
-    fit, _ = icp_signal.signals(fake_score(provisional=True), NOW)
+    fit, _ = icp_signal.signals(shared_score(provisional=True))
     client = next(f for f in fit["facts"] if f["id"] == "icp.client_lens")
     assert client["value"] == "Client lens: Moderate (provisional)"
 
 
-def test_cache_reuses_for_four_weeks_and_never_reuses_failures(migrated):
-    with get_sessionmaker()() as s:
-        icp_signal.record(s, "Northwind Foods Pvt Ltd", NOW - timedelta(days=10), error="boom")  # newest-but-one: failed
-        icp_signal.record(s, "Northwind Foods Pvt Ltd", NOW - timedelta(days=20), result=fake_score())
-        s.commit()
-        key = icp_signal.company_key("Northwind Foods Pvt Ltd")
-        assert key == icp_signal.company_key("NORTHWIND FOODS PRIVATE LIMITED")  # legal suffixes don't matter
-        assert icp_signal.fresh_icp(s, key, NOW, 28).status == "scored"
-        assert icp_signal.fresh_icp(s, key, NOW + timedelta(days=9), 28) is None  # 29 days old now
-        assert s.scalar(select(CompanyIcp).where(CompanyIcp.status == "scored")).result["score"]  # full result kept
+def test_a_gate_1_stop_is_not_a_score():
+    fit, stakeholder = icp_signal.signals(shared_score(status="gate_1_stopped"))
+    assert fit["status"] == "gate_1_stopped" and not stakeholder
+    assert fit["facts"][0]["value"] == "ICP could not score this company: Company not identified"
 
 
-def test_once_exa_is_set_a_score_made_without_it_is_redone(migrated):
-    with get_sessionmaker()() as s:
-        key = icp_signal.company_key("Northwind Foods Pvt Ltd")
-        icp_signal.record(s, "Northwind Foods Pvt Ltd", NOW - timedelta(days=3), result=fake_score(provisional=True))
-        s.commit()
-        assert icp_signal.fresh_icp(s, key, NOW, 28) is not None  # still reused while Exa is off
-        assert icp_signal.fresh_icp(s, key, NOW, 28, require_exa=True) is None  # rescored once the key is set
-        icp_signal.record(s, "Northwind Foods Pvt Ltd", NOW - timedelta(days=1), result=fake_score(), exa_research=True)
-        s.commit()
-        assert icp_signal.fresh_icp(s, key, NOW, 28, require_exa=True).result["exa_research"] is True
-
-
-def test_a_run_with_exa_rescores_companies_scored_without_it(all_sources):
-    ids = ["zoho.stage", "icp.recommendation"]
-    with get_sessionmaker()() as s:
-        run(s, all_sources, ids)  # settings() has no EXA_API_KEY
-        assert all_sources["calls"]["icp"] == 2
-        run(s, all_sources, ids, settings_overrides={"exa_api_key": "exa-key"})
-        assert all_sources["calls"]["icp"] == 4  # both companies rescored, now with research
-        run(s, all_sources, ids, settings_overrides={"exa_api_key": "exa-key"})
-        assert all_sources["calls"]["icp"] == 4  # and those scores are reused
+def test_company_keys_ignore_case_and_legal_suffixes():
+    assert icp_signal.company_key("Northwind Foods Pvt Ltd") == icp_signal.company_key("NORTHWIND FOODS PRIVATE LIMITED")
 
 
 # ---------------------------------------------------------------- capability with the re-rank
@@ -231,11 +202,11 @@ def all_sources(migrated):
                               "content": "Working capital controls.", "industry_match": True}]
         return capability_for(deal, corpus, find_cases=find, rerank=rerank, find_team=team)
 
-    def score(company, generated_at=None):
+    def fetch_icp(settings, companies):
         calls["icp"] += 1
-        return fake_score()
+        return SharedResult(ok=True, scores={key: shared_score(name) for key, name in companies.items()})
 
-    return {"fetch_mail": fetch_mail, "capability_fn": capability, "score_company_fn": score, "calls": calls}
+    return {"fetch_mail": fetch_mail, "capability_fn": capability, "fetch_icp": fetch_icp, "calls": calls}
 
 
 def run(session, src, reply_ids, settings_overrides=None, **kw):
@@ -246,7 +217,7 @@ def run(session, src, reply_ids, settings_overrides=None, **kw):
     points = SimpleNamespace(parsed_output=KeyPoints(mails=[MailPoints(index=1, key_points=["CFO wants phasing by 30 Sep"])]),
                              stop_reason="end_turn", content=[])
     return run_week(session, settings(**(settings_overrides or {})), now=NOW, fetch=zoho_fetch(), fetch_setu=lambda s: SetuResult(case_studies=CORPUS),
-                    fetch_mail=src["fetch_mail"], capability_fn=src["capability_fn"], score_company_fn=src["score_company_fn"],
+                    fetch_mail=src["fetch_mail"], capability_fn=src["capability_fn"], fetch_icp=src["fetch_icp"],
                     llm_client=FakeClaude(points, reply), deal_zoho_id="598723000011234001", **kw)
 
 
@@ -267,17 +238,15 @@ def test_a_run_fills_all_five_signals_and_the_nba_cites_across_them(all_sources)
         rec = s.scalar(select(Recommendation))
         assert [e["source"] for e in rec.evidence] == ["zoho", "outlook", "readai", "setu", "icp"]
         assert rec.proof == {"name": "Patisserie & Bakes", "why": "Fits the receivables problem."} and rec.sme == "A. Mehta (EP), R. Iyer (EL)"
-        assert r.stats["phase"] == "done" and r.stats["icp_to_score"] == 2 and r.stats["capability_done"] == 2
+        assert r.stats["phase"] == "done" and r.stats["icp_found"] == 2 and r.stats["capability_done"] == 2
 
 
-def test_the_next_run_reuses_the_cached_icp(all_sources):
-    ids = ["zoho.stage", "icp.recommendation"]
+def test_each_run_reads_the_shared_scores_afresh_and_never_scores(all_sources):
     with get_sessionmaker()() as s:
-        run(s, all_sources, ids)
-        assert all_sources["calls"]["icp"] == 2  # two companies scored once
-        second = run(s, all_sources, ids)
-        assert all_sources["calls"]["icp"] == 2 and second.stats["icp_cached"] == 2
-        assert second.stats["sources"]["icp"] == "ok (all cached)"
+        run(s, all_sources, ["zoho.stage", "icp.recommendation"])
+        second = run(s, all_sources, ["zoho.stage", "icp.recommendation"])
+        assert all_sources["calls"]["icp"] == 2  # one read per run, no per-company scoring
+        assert second.stats["sources"]["icp"] == "ok (2 of 2 companies have a score)"
 
 
 def test_the_board_fills_the_segments_that_have_data(client, all_sources):
@@ -291,20 +260,20 @@ def test_the_board_fills_the_segments_that_have_data(client, all_sources):
     assert segments["conversation"]["sources"] == ["Zoho", "Call", "Mail"]
     assert segments["fit"]["source"] == "ICP" and segments["contact"]["source"] == "ICP"
     assert detail["icp"]["recommendation"] == "Pursue selectively"
+    assert (detail["icp"]["client_total"], detail["icp"]["practus_total"]) == (31, 38)
     assert detail["actions"][0]["sme"] == "A. Mehta (EP), R. Iyer (EL)" and detail["actions"][0]["proof"]["name"] == "Patisserie & Bakes"
 
 
-def test_without_an_anthropic_key_icp_and_rerank_are_skipped_and_said_so(migrated):
+def test_without_an_anthropic_key_the_rerank_is_skipped_and_without_a_shared_db_icp_is_unavailable(migrated):
     from api.engine.run import run_week
     from api.sources.setu import SetuResult
 
     with get_sessionmaker()() as s:
         r = run_week(s, settings(), now=NOW, fetch=zoho_fetch(), fetch_setu=lambda _: SetuResult(case_studies=CORPUS),
                      fetch_mail=lambda *a: MailResult(error="Outlook is not configured"))
-        assert r.stats["sources"]["icp"] == "skipped: ANTHROPIC_API_KEY is not set"
+        assert r.stats["sources"]["icp"].startswith("unavailable (ICP_SHARED_DB_URL is not set.)")
         assert r.stats["sources"]["setu_rerank"] == "skipped: ANTHROPIC_API_KEY is not set"
         assert r.stats["sources"]["outlook"] == "Outlook is not configured"
-        assert s.scalar(select(CompanyIcp)) is None
 
 
 def test_match_confidence_tiers_and_the_relevance_floor():

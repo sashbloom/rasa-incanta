@@ -19,7 +19,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, R
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import Session
 
@@ -29,7 +29,6 @@ from api.db import get_session, get_sessionmaker
 from api.domain.matching import has_industry, label_matches, resolve_case_study_industry
 from api.domain.stages import board_for
 from api.domain.weeks import week_start
-from api.engine import icp_signal
 from api.engine.persona_signal import usable_name
 from api.engine.run import run_week
 from api.icp import setu_db, setu_embeddings
@@ -232,27 +231,6 @@ def _richness(z, reachouts: list, setu_industries: list[str]) -> dict:
            "industry_match": industry_match, "filled_field_count": filled, "score": score}
 
 
-class ImportedIcpScore(BaseModel):
-    """Pratham's format. Extra fields (gate_flag and the like) are ignored. The first names we built
-    the endpoint with (company, scored_at) still work."""
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
-    company: str = Field(min_length=1, max_length=300, validation_alias=AliasChoices("company_name", "company"))
-    verdict: str = Field(min_length=1, max_length=200)
-    right_to_win: str | None = Field(default=None, max_length=1000)
-    scored_at: datetime = Field(validation_alias=AliasChoices("score_date", "scored_at"))
-
-
-@fastapi_app.post("/api/icp/import", dependencies=[Depends(require_debug_key)])
-def import_icp_scores(scores: list[ImportedIcpScore], session: Session = Depends(get_session)) -> dict:
-    """Load ICP scores made elsewhere into company_icp (body: a JSON list of {company_name, verdict,
-    right_to_win, score_date}). A company already scored within ICP_CACHE_DAYS is skipped, and so is a
-    repeat within the same request. Append-only: nothing is overwritten. Gated like every debug route."""
-    imported, skipped = icp_signal.import_scores(session, [s.model_dump() for s in scores],
-                                                 datetime.now(timezone.utc), get_settings().icp_cache_days)
-    return {"imported": imported, "skipped": skipped}
-
-
 @fastapi_app.post("/api/transcripts/upload", dependencies=[Depends(require_debug_key)])
 async def upload_transcripts(request: Request, session: Session = Depends(get_session)) -> dict:
     """Feed in past meetings Read.ai never delivered: a JSON array (title, date, participants, transcript,
@@ -335,7 +313,7 @@ def run_sources() -> dict:
     """What a run reads from and drafts with. Tests override this dependency with fakes.
     None means the real source (or, for llm_client, the Claude client from settings)."""
     return {"fetch": fetch_deals, "fetch_setu": fetch_case_studies, "fetch_mail": None,
-            "capability_fn": None, "score_company_fn": None, "llm_client": None}
+            "capability_fn": None, "fetch_icp": None, "llm_client": None}
 
 
 def mark_interrupted_runs() -> None:
@@ -356,7 +334,7 @@ def execute_run(run_id: uuid.UUID, sources: dict) -> None:
                 run_week(session, get_settings(), fetch=sources["fetch"], llm_client=sources["llm_client"],
                          fetch_setu=sources.get("fetch_setu", fetch_case_studies),
                          fetch_mail=sources.get("fetch_mail"), capability_fn=sources.get("capability_fn"),
-                         score_company_fn=sources.get("score_company_fn"),
+                         **({"fetch_icp": sources["fetch_icp"]} if sources.get("fetch_icp") else {}),
                          nba_limit=None, run=session.get(Run, run_id))
             except Exception as exc:
                 logger.exception("Run %s crashed", run_id)  # the detail stays in the server log

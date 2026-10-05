@@ -57,11 +57,8 @@ class Settings(BaseSettings):
     voyage_api_key: str = ""
     embedding_model: str = "voyage-4-lite"
 
-    # ICP scoring (ported from the ICP bot). Exa powers its web research; without a key those
-    # criteria become data gaps, as in the ICP bot. Results are cached per company.
+    # Exa powers the contact persona research only; we no longer score companies ourselves.
     exa_api_key: str = ""
-    icp_cache_days: int = 28
-    icp_concurrency: int = 4  # companies scored in parallel during a run
     # Persona deep-dive of the person in each deal's outreach log (Exa research + one Claude call),
     # cached per contact. Needs EXA_API_KEY: there is no LinkedIn scraping or Claude web search.
     persona_cache_days: int = 56
@@ -114,8 +111,8 @@ class Settings(BaseSettings):
     setu_pgpassword: str = ""
     setu_pgsslmode: str = "require"
 
-    # ICP scores shared with other Practus agents (Postgres): checked before we score a company,
-    # written to after. Unset = local company_icp only.
+    # The Postgres shared with the ICP service: finished ICP scores are read from its `icp` schema
+    # (read-only; sslmode=require is forced). Unset = no company has an ICP score.
     icp_shared_db_url: str = ""
 
     @property
