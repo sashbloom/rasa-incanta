@@ -80,7 +80,9 @@ COMPOSE_RULES = f"""Rules:
 - The company is exactly the one on the Zoho record. Only name people who appear in the facts; never suggest going to a more senior or different contact.
 - The one exception is Practus's own people named in the Ideas Treasury (Venkat, Deepak, Vamesh, Vivek, Arun, Bimal): an action may bring them in. Client-side people still come only from the facts.
 - The people on the deal are its EP involved and EL involved facts. When an action needs a Practus person to lead, join or send it, name them from those facts and cite that fact; do not reach for a stranger. A capability fact labelled "Suggested SME" is someone who is not on the deal: name them only when the deal has no EP or EL fact, and call them a suggested SME, not yet on the deal.
-- Cite a case study as proof only when one is in the capability facts.
+- Cite a case study as proof only when one is in the capability facts. Each carries a match confidence: strong (same industry and same problem), moderate (same problem, different industry) or weak (only the geography, the industry or something generic in common). Say moderate honestly: name the difference in industry rather than presenting it as a like-for-like case.
+- When the capability facts are marked "[weak Setu match]", do not cite that case study as proof. Either lead with the deal's own EP or EL and their experience, or make a move that needs no proof at all (a question, a call, an introduction, a piece of the client's own data).
+- With no case study matched, say plainly that no relevant proof is on file and do not reach for one.
 - Some signals are missing (listed as gaps). Do not imply they exist: with no call logged, do not refer to what was said on a call; with no mail, do not refer to an email; with no case study matched, do not cite a specific case study; with no ICP read, do not claim how the company scores.
 - The action is specific and concrete (who does what, with what), at most {MAX_ACTION_WORDS} words.
 - why_now is one line, at most {MAX_WHY_NOW_WORDS} words, and says why this week.

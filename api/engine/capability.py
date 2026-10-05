@@ -34,6 +34,40 @@ MAX_CASE_STUDIES = 3
 MIN_KEYWORD_SCORE = 0.5  # for matches without the same industry: rare shared terms only
 
 
+STRONG, MODERATE, WEAK = "strong", "moderate", "weak"
+_RANK = {WEAK: 0, MODERATE: 1, STRONG: 2}
+
+
+def match_confidence(industry_match: bool, geography_match: bool, score: float) -> str | None:
+    """How much proof a case study is for this deal. The matcher's score is 2 * industry + geography +
+    keyword score, so what is left after those is the shared-problem evidence; it counts as "same
+    problem" at MIN_KEYWORD_SCORE (rare shared terms, the same bar the strict match uses).
+    strong: same industry and same problem. moderate: same problem, different industry. weak: the
+    industry, the geography or nothing specific is all it shares. None: not even that, so the case
+    study is not offered at all and the deal gets the `no_setu_match` gap."""
+    problem = score - 2 * industry_match - geography_match >= MIN_KEYWORD_SCORE
+    if problem:
+        return STRONG if industry_match else MODERATE
+    if industry_match or geography_match:
+        return WEAK
+    return None
+
+
+def best_confidence(cases: list[dict]) -> str | None:
+    ratings = [c["confidence"] for c in cases if c.get("confidence")]
+    return max(ratings, key=_RANK.__getitem__) if ratings else None
+
+
+def _rated(cases: list[dict]) -> list[dict]:
+    """Cases with their confidence; those that clear no relevance threshold are dropped."""
+    out = []
+    for c in cases:
+        confidence = match_confidence(bool(c.get("industry_match")), bool(c.get("geography_match")), float(c.get("score") or 0))
+        if confidence:
+            out.append({**c, "confidence": confidence})
+    return out
+
+
 @dataclass(frozen=True)
 class CaseMatch:
     case: CaseStudy
@@ -139,7 +173,8 @@ def _geography(deal: ZohoDeal) -> str | None:
 def _deterministic_cases(deal: ZohoDeal, corpus: list[CaseStudy]) -> list[dict]:
     return [{"name": m.case.name, "industry": m.case.industry, "service_line": m.case.service_line,
              "content": m.case.content, "why": match_reason(m),
-             "industry_match": m.industry_match} for m in match_case_studies(deal, corpus)]
+             "industry_match": m.industry_match, "geography_match": m.geography_match,
+             "score": m.score} for m in match_case_studies(deal, corpus)]
 
 
 def _smes(deal: ZohoDeal, find_team) -> list[dict]:
@@ -191,10 +226,12 @@ def capability_for(deal: ZohoDeal, corpus: list[CaseStudy], *, find_cases=None, 
             reranked = True
             cases = [{"name": c["name"], "industry": c.get("industry"), "service_line": c.get("service_line"),
                       "content": c.get("content") or "", "why": c["llm_rationale"],
-                      "industry_match": bool(c.get("industry_match"))} for c in picked]
+                      "industry_match": bool(c.get("industry_match")),
+                      "geography_match": bool(c.get("geography_match")), "score": c.get("score") or 0} for c in picked]
     except Exception:
         cases = []
     if not reranked:  # never let the re-rank fallback (top keyword scores, possibly zero) stand as proof
         cases = _deterministic_cases(deal, corpus)
+    cases = _rated(cases)  # a case study that clears no relevance threshold is not offered as proof
     smes = deal_team(deal) or [{**s, "suggested": True} for s in _smes(deal, find_team)]
     return Capability(cases=cases, smes=smes, reranked=reranked)

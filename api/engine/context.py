@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from api.domain.gaps import Gap
 from api.domain.stages import board_for
-from api.engine.capability import Capability, deal_team, describe, match_case_studies, real_people
+from api.engine.capability import WEAK, Capability, _rated, best_confidence, deal_team, describe, match_case_studies, real_people
 from api.sources.outlook import Mail
 from api.sources.readai import MeetingRecord
 from api.sources.setu import CaseStudy
@@ -202,7 +202,9 @@ def capability_signal(deal: ZohoDeal, case_studies: list[CaseStudy] | None,
         matches = match_case_studies(deal, case_studies or [])
         cases = [{"name": m.case.name, "industry": m.case.industry, "service_line": m.case.service_line,
                   "content": m.case.content, "text": describe(m), "industry_match": m.industry_match,
-                  "keyword_hits": list(m.keyword_hits), "score": m.score} for m in matches]
+                  "keyword_hits": list(m.keyword_hits), "score": m.score,
+                  "geography_match": m.geography_match} for m in matches]
+        cases = _rated(cases)
         smes, reranked = deal_team(deal), False  # the people on the deal come from Zoho, with or without Setu
     else:
         cases = [{**c, "text": f"{c['name']}" + (f" ({', '.join(x for x in (c.get('industry'), c.get('service_line')) if x)})"
@@ -210,7 +212,12 @@ def capability_signal(deal: ZohoDeal, case_studies: list[CaseStudy] | None,
                   + f". Why it fits: {c['why']}"} for c in capability.cases]
         smes, reranked = capability.smes, capability.reranked
 
-    facts = [_fact(f"case_{i}", _short(c["name"]), c["text"] + (f" {_excerpt(c['content'])}" if c.get("content") else ""),
+    confidence = best_confidence(cases)
+    # When even the best match is weak, every case fact says so, so the model cannot take it for proof.
+    flag = "[weak Setu match] " if confidence == WEAK else ""
+    facts = [_fact(f"case_{i}", _short(c["name"]),
+                   f"{flag}{c['text']} Match confidence: {c['confidence']}."
+                   + (f" {_excerpt(c['content'])}" if c.get("content") else ""),
                    source="setu") for i, c in enumerate(cases, 1)]
     # The deal own EP / EL are cited through zoho.ep_involved / zoho.el_involved; only a Setu suggestion
     # (someone not on the deal) becomes a capability fact, and it says so.
@@ -222,7 +229,7 @@ def capability_signal(deal: ZohoDeal, case_studies: list[CaseStudy] | None,
         return ({"smes": smes, "facts": facts} if (facts or smes) else {}), [Gap.NO_SETU_MATCH]
     return {
         "case_studies": [{k: v for k, v in c.items() if k not in ("content", "text")} for c in cases],
-        "smes": smes, "reranked": reranked, "facts": facts,
+        "smes": smes, "reranked": reranked, "match_confidence": confidence, "facts": facts,
     }, []
 
 

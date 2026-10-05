@@ -145,10 +145,11 @@ def team(**_):
 
 
 def test_reranked_cases_carry_claudes_reason_and_the_deal_names_its_own_people():
-    find = lambda **kw: [{"name": "Steel Major", "industry": "Steel", "service_line": None, "content": "x", "industry_match": False}]  # noqa: E731
+    find = lambda **kw: [{"name": "Steel Major", "industry": "Steel", "service_line": None, "content": "x", "industry_match": False, "score": 1.0}]  # noqa: E731
     rerank = lambda c, **kw: [{**c[0], "llm_rationale": "Same cost-leakage problem."}]  # noqa: E731
     cap = capability_for(northwind(), CORPUS, find_cases=find, rerank=rerank, find_team=team)
     assert cap.reranked and cap.cases[0]["name"] == "Steel Major" and cap.cases[0]["why"] == "Same cost-leakage problem."
+    assert cap.cases[0]["confidence"] == "moderate"  # same problem (score 1.0), different industry
     # Zoho names A. Mehta (EP) and R. Iyer (EL); "Unidentified EL" is a placeholder, and Setu is not asked
     assert [(s["name"], s["role"], s["on_deal"]) for s in cap.smes] == [("A. Mehta", "EP", True), ("R. Iyer", "EL", True)]
     assert sme_text(cap.smes) == "A. Mehta (EP), R. Iyer (EL)"
@@ -304,3 +305,52 @@ def test_without_an_anthropic_key_icp_and_rerank_are_skipped_and_said_so(migrate
         assert r.stats["sources"]["setu_rerank"] == "skipped: ANTHROPIC_API_KEY is not set"
         assert r.stats["sources"]["outlook"] == "Outlook is not configured"
         assert s.scalar(select(CompanyIcp)) is None
+
+
+def test_match_confidence_tiers_and_the_relevance_floor():
+    from api.engine.capability import match_confidence
+    assert match_confidence(True, False, 2 + 0.6) == "strong"        # same industry and same problem
+    assert match_confidence(False, True, 1 + 0.6) == "moderate"      # same problem, other industry
+    assert match_confidence(False, True, 1.0) == "weak"              # geography only
+    assert match_confidence(True, False, 2.0) == "weak"              # industry, but no shared problem
+    assert match_confidence(False, False, 0.2) is None               # nothing: not offered
+
+
+def _cap_with(cases):
+    from api.engine.capability import Capability
+    return Capability(cases=cases, smes=[], reranked=True)
+
+
+def test_a_weak_best_match_is_flagged_on_every_case_fact_and_a_stronger_one_is_not():
+    from api.engine.context import capability_signal
+    weak = {"name": "Geo Only", "industry": "Retail", "service_line": None, "content": "x", "why": "w",
+            "industry_match": False, "geography_match": True, "score": 1.0}
+    sig, gaps = capability_signal(northwind(), None, _cap_with([{**weak, "confidence": "weak"}]))
+    assert not gaps and sig["match_confidence"] == "weak"
+    case_facts = [f for f in sig["facts"] if f["id"].startswith("setu.case_")]
+    assert case_facts and all("[weak Setu match]" in f["value"] for f in case_facts)
+    strong = {**weak, "name": "Both", "industry_match": True, "score": 2.9, "confidence": "strong"}
+    sig, _ = capability_signal(northwind(), None, _cap_with([strong, {**weak, "confidence": "weak"}]))
+    assert sig["match_confidence"] == "strong"
+    assert not any("[weak Setu match]" in f["value"] for f in sig["facts"])
+
+
+def test_no_case_study_over_the_floor_is_the_no_setu_match_gap():
+    find = lambda **kw: [{"name": "Noise", "industry": "Steel", "service_line": None, "content": "x",
+                          "industry_match": False, "geography_match": False, "score": 0.1}]  # noqa: E731
+    rerank = lambda c, **kw: [{**c[0], "llm_rationale": "Generic."}]  # noqa: E731
+    cap = capability_for(northwind(), CORPUS, find_cases=find, rerank=rerank, find_team=team)
+    assert cap.cases == []
+
+
+def test_the_proof_segment_carries_the_weak_flag():
+    from types import SimpleNamespace
+    from api.views import _segments
+    fact = {"id": "setu.case_1", "source": "setu", "label": "x", "value": "v", "date": None}
+    def card(conf):
+        empty = {}
+        return SimpleNamespace(account_fit=empty, stakeholder=empty, conversation=empty, deal_state=empty, gaps=[],
+                               capability={"facts": [fact], "match_confidence": conf})
+    proof = lambda c: next(s for s in _segments(c) if s["key"] == "proof")  # noqa: E731
+    assert "[weak Setu match]" in proof(card("weak"))["source"]
+    assert "[weak Setu match]" not in proof(card("strong"))["source"]

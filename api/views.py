@@ -86,6 +86,8 @@ def _segments(card: ContextCard | None) -> list[dict]:
         if facts:
             dates = [f["date"] for f in facts if f.get("date")]
             labels = list(dict.fromkeys(SOURCE_LABEL.get(f.get("source"), f.get("source")) for f in facts))
+            if signal.get("match_confidence") == "weak":
+                labels.append("[weak Setu match]")  # the card shows the same flag the model was given
             out.append({"key": key, "name": name, "present": True, "source": ", ".join(labels),
                         "sources": labels, "date": max(dates) if dates else None, "reason": None})
         else:

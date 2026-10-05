@@ -105,12 +105,35 @@ function duration(s: number): string {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`
 }
 
-/** Time left, once at least one item has finished to measure the pace by. */
-function remaining(startedAt: string | undefined, counts: [number, number] | null, now: number): string | null {
+/** Seconds left in a step, once at least one item has finished to measure the pace by. */
+function secondsLeft(startedAt: string | undefined, counts: [number, number] | null, now: number): number | null {
   const elapsed = seconds(startedAt, now)
   if (!counts || elapsed === null || counts[0] === 0 || counts[0] >= counts[1]) return null
-  const left = Math.round((elapsed / counts[0]) * (counts[1] - counts[0]))
+  return Math.round((elapsed / counts[0]) * (counts[1] - counts[0]))
+}
+
+function leftLabel(left: number): string {
   return left < 60 ? '~1 min left' : `~${Math.round(left / 60)} min left`
+}
+
+/** Thin gold bar on a line-colour track; a small flask rides the leading edge while it fills.
+ *  Once the step is done the bar and flask fade out. Reduced motion: no flask, no easing. */
+function StepBar({ pct, done }: { pct: number; done: boolean }) {
+  const shown = done ? 100 : Math.min(100, Math.max(0, pct))
+  return (
+    <div aria-hidden
+      className={`relative ml-6 h-1 rounded-full bg-line transition-opacity duration-500 motion-reduce:transition-none ${done ? 'opacity-0' : 'opacity-100'}`}>
+      <div className="h-full rounded-full bg-gold transition-[width] duration-700 ease-out motion-reduce:transition-none"
+        style={{ width: `${shown}%` }} />
+      <svg viewBox="0 0 12 14" width="12" height="14"
+        className="absolute -top-2 -translate-x-1/2 transition-[left] duration-700 ease-out motion-reduce:hidden"
+        style={{ left: `${shown}%` }}>
+        <path d="M4.5 1h3M5 1v4L1.5 11.2A1.2 1.2 0 0 0 2.5 13h7a1.2 1.2 0 0 0 1-1.8L7 5V1"
+          fill="none" stroke="var(--gold)" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M3.2 9h5.6l1.2 2.4a.6.6 0 0 1-.5.9H2.5a.6.6 0 0 1-.5-.9z" fill="var(--gold)" />
+      </svg>
+    </div>
+  )
 }
 
 function Progress({ run }: { run: RunView }) {
@@ -119,34 +142,49 @@ function Progress({ run }: { run: RunView }) {
     const t = window.setInterval(() => setNow(Date.now()), POLL_MS)
     return () => window.clearInterval(t)
   }, [])
+  const barSteps = useRef(new Set<string>()) // steps that showed a bar, so it can fade rather than vanish
   const phase = run.stats.phase ?? 'pull'
   const current = STEPS.findIndex((s) => s.key === phase)
   const phases = run.stats.phases ?? {}
   const sources = run.stats.sources ?? {}
+  const elapsed = seconds(run.started_at ?? undefined, now)
+  const left = secondsLeft(phases[phase]?.started_at, phaseCounts(run, phase), now)
   return (
     <ol aria-label="Run progress" className="m-0 list-none p-0">
       {STEPS.map((step, i) => {
         const state = i < current ? 'done' : i === current ? 'current' : 'todo'
         const counts = state === 'current' ? phaseCounts(run, step.key) : null
         const took = state === 'done' ? seconds(phases[step.key]?.started_at, phases[step.key]?.finished_at) : null
-        const eta = state === 'current' ? remaining(phases[step.key]?.started_at, counts, now) : null
+        const stepLeft = state === 'current' ? secondsLeft(phases[step.key]?.started_at, counts, now) : null
+        const eta = stepLeft !== null ? leftLabel(stepLeft) : null
+        const showBar = state === 'current' ? counts !== null : state === 'done' && barSteps.current.has(step.key)
+        if (counts) barSteps.current.add(step.key)
         const skipped = state === 'done' && step.key === 'mail' && sources.outlook && sources.outlook !== 'ok'
         const label = state === 'done' ? step.done : step.doing
         return (
           <li key={step.key} aria-current={state === 'current' ? 'step' : undefined}
-            className={`t-meta m-0 flex items-baseline gap-2 py-0.5 ${state === 'todo' ? 'opacity-60' : ''}`}>
+            className={`t-meta m-0 py-0.5 ${state === 'todo' ? 'opacity-60' : ''}`}>
+            <div className="flex items-baseline gap-2">
             <span aria-hidden className="w-4 shrink-0 text-center">{state === 'done' ? '✓' : state === 'current' ? '●' : '○'}</span>
             <span className="flex-1">
               {label}
               {counts ? `: ${counts[0]} of ${counts[1]} ${step.noun}` : ''}
-              {skipped ? ' (skipped: Outlook is not available, deals are flagged no mail)' : ''}
+              {skipped ? ` (${sources.outlook})` : ''}
             </span>
             <span className="shrink-0 tabular-nums">{took !== null ? duration(took) : eta ?? ''}</span>
+            </div>
+            {showBar && <StepBar pct={counts ? (counts[0] / counts[1]) * 100 : 100} done={state === 'done'} />}
           </li>
         )
       })}
       {phase === 'icp' && (
         <li className="t-meta m-0 mt-1 pl-6">Each new company takes several minutes; scores are reused for four weeks.</li>
+      )}
+      {elapsed !== null && (
+        <li className="t-meta m-0 mt-2 flex justify-between border-t border-line pt-1.5 tabular-nums">
+          <span>Elapsed {duration(elapsed)}</span>
+          <span>{left !== null ? `${leftLabel(left)} in this step` : 'Estimating time left'}</span>
+        </li>
       )}
     </ol>
   )
