@@ -7,12 +7,14 @@ import type { Action, DealDetail as Detail, HistoryWeek, SavedDecision } from '.
 import { Flask } from './Flask'
 import { IngredientBar, trustNote } from './IngredientBar'
 
-function Field({ label, value }: { label: string; value: string | null | undefined }) {
+/** One header cell, two lines: the label above, the value below. `wide` lets a long value (the ICP line)
+ *  take two columns so it does not wrap awkwardly. */
+function Field({ label, value, wide = false }: { label: string; value: string | null | undefined; wide?: boolean }) {
   if (!value) return null
   return (
-    <div className="flex items-baseline gap-2">
+    <div className={`min-w-0 ${wide ? 'col-span-2' : ''}`}>
       <dt className="t-label">{label}</dt>
-      <dd className="m-0">{value}</dd>
+      <dd className="m-0 break-words">{value}</dd>
     </div>
   )
 }
@@ -310,16 +312,16 @@ export function DealDetail({ dealId, backTo, reloadKey = 0 }: { dealId: string; 
         <ArrowLeft size={16} aria-hidden="true" /> Back to deals
       </Link>
       <h2 className="t-deal m-0">{deal.name}</h2>
-      <dl className="m-0 mt-3 mb-6 flex flex-wrap gap-x-7 gap-y-1">
+      <dl className="m-0 mt-4 mb-8 grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4">
         <Field label="Stage" value={deal.stage} />
         <Field label="Owner" value={deal.owner_name} />
         <Field label="EP" value={deal.ep_involved.join(', ')} />
         <Field label="EL" value={deal.el_involved.join(', ')} />
         <Field label="In stage" value={deal.days_in_stage != null ? `${deal.days_in_stage} days` : null} />
         <Field label="Last touch" value={shortDate(deal.last_touch)} />
-        <Field label="Company" value={deal.account_name} />
+        <Field label="Company" value={deal.account_name} wide />
         <Field label="Contact" value={deal.contact_name} />
-        <Field label="ICP" value={icpLine(deal.icp)} />
+        <Field label="ICP" value={icpLine(deal.icp)} wide />
       </dl>
 
       <IngredientBar key={deal.id} segments={deal.segments} />

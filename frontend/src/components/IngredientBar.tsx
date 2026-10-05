@@ -6,7 +6,7 @@ import type { Segment } from '../types'
  *  a gap, with its reason written underneath. */
 export function IngredientBar({ segments }: { segments: Segment[] }) {
   return (
-    <ul className="m-0 grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-5 sm:gap-1.5" aria-label="What these actions were brewed from">
+    <ul className="m-0 grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-5 sm:gap-4" aria-label="What these actions were brewed from">
       {segments.map((s, i) => {
         const note = s.present ? [s.source, shortDate(s.date)].filter(Boolean).join(', ') : s.reason ?? ''
         return (

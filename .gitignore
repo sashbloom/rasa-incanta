@@ -20,3 +20,7 @@ api/static/
 
 # ICP bot: a read-only reference clone of its own repo. Read it, never edit or commit it.
 icp-bot/
+
+# Cross-agent ICP Postgres docs: the credentials file holds a live password
+docs/ICP_Postgres_Access_Guide.md
+docs/ICP_Postgres_Agent_Credentials.md
